@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import html
+import io
 import json
 import os
 import re
@@ -42,11 +43,22 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 VERSION = "TAKlite 0.2"
 PORTAL_SESSION_HOURS = 2
+MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
+MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
+COT_MAX_BUFFER_BYTES = int(os.environ.get("TAKLITE_COT_MAX_BUFFER_BYTES", str(1024 * 1024)))
+EVENT_RETENTION_ROWS = int(os.environ.get("TAKLITE_EVENT_RETENTION_ROWS", "50000"))
+COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "false").lower() in ("1", "true", "yes", "on")
+ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
+LOGIN_LIMIT_ATTEMPTS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_ATTEMPTS", "8"))
+LOGIN_LIMIT_WINDOW_SECONDS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_WINDOW_SECONDS", "300"))
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
 UID_RE = re.compile(rb'\buid="([^"]+)"')
 CALLSIGN_RE = re.compile(rb'<contact\b[^>]*\bcallsign="([^"]+)"')
+EVENT_SAVE_COUNT = 0
+LOGIN_FAILURES = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def utc_now():
@@ -162,6 +174,12 @@ def package_path(hash_value, filename):
     return PACKAGE_DIR / f"{safe_hash}{suffix}"
 
 
+def safe_download_name(filename, fallback="download.bin"):
+    name = Path(filename or fallback).name
+    name = re.sub(r"[^A-Za-z0-9_.() -]+", "_", name).strip(" .")
+    return name[:160] or fallback
+
+
 def row_to_package(row):
     return {
         "PrimaryKey": row["PrimaryKey"],
@@ -242,6 +260,21 @@ def delete_package(hash_value, delete_file=True):
     return {"deleted_rows": 1, "deleted_files": deleted_files}
 
 
+def prune_events_if_needed(conn):
+    global EVENT_SAVE_COUNT
+    if EVENT_RETENTION_ROWS <= 0:
+        return
+    EVENT_SAVE_COUNT += 1
+    if EVENT_SAVE_COUNT % 100:
+        return
+    conn.execute("""
+        delete from events
+        where id not in (
+            select id from events order by id desc limit ?
+        )
+    """, (EVENT_RETENTION_ROWS,))
+
+
 def save_event(data, remote):
     uid = decode_match(UID_RE.search(data))
     callsign = decode_match(CALLSIGN_RE.search(data))
@@ -254,6 +287,7 @@ def save_event(data, remote):
             "insert into events (uid, callsign, received_at, remote, cot) values (?, ?, ?, ?, ?)",
             (uid, callsign, utc_now(), remote, cot),
         )
+        prune_events_if_needed(conn)
         conn.commit()
     if uid or callsign:
         RELAY.update_client(remote, uid, callsign)
@@ -312,6 +346,34 @@ def verify_password(password, stored):
         return hmac.compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
+
+
+def rate_limit_key(scope, remote, username):
+    return f"{scope}:{remote}:{(username or '').strip().lower()}"
+
+
+def login_limited(scope, remote, username):
+    now = time.time()
+    key = rate_limit_key(scope, remote, username)
+    with LOGIN_LOCK:
+        attempts = [seen for seen in LOGIN_FAILURES.get(key, []) if now - seen < LOGIN_LIMIT_WINDOW_SECONDS]
+        LOGIN_FAILURES[key] = attempts
+        return len(attempts) >= LOGIN_LIMIT_ATTEMPTS
+
+
+def record_login_failure(scope, remote, username):
+    now = time.time()
+    key = rate_limit_key(scope, remote, username)
+    with LOGIN_LOCK:
+        attempts = [seen for seen in LOGIN_FAILURES.get(key, []) if now - seen < LOGIN_LIMIT_WINDOW_SECONDS]
+        attempts.append(now)
+        LOGIN_FAILURES[key] = attempts
+
+
+def clear_login_failures(scope, remote, username):
+    key = rate_limit_key(scope, remote, username)
+    with LOGIN_LOCK:
+        LOGIN_FAILURES.pop(key, None)
 
 
 def admin_count():
@@ -660,6 +722,18 @@ def find_cert_profile_by_token(token):
         return conn.execute("select * from cert_profiles where download_token = ?", (token,)).fetchone()
 
 
+def client_cert_authorized(common_name):
+    if not common_name:
+        return not COT_TLS_REQUIRE_CLIENT_CERT
+    if ALLOW_LEGACY_CLIENT_CERT and common_name == "taklite-client":
+        return True
+    with db_connect() as conn:
+        row = conn.execute(
+            "select revoked_at from cert_profiles where name = ?", (common_name,)
+        ).fetchone()
+    return bool(row and not row["revoked_at"])
+
+
 def run_openssl(args):
     result = subprocess.run(["openssl", *args], capture_output=True, text=True)
     if result.returncode:
@@ -849,7 +923,7 @@ def server_tls_context(request_client_cert=False):
     context.load_cert_chain(str(HTTPS_CERT), str(HTTPS_KEY))
     if request_client_cert and CLIENT_CA.exists():
         context.load_verify_locations(cafile=str(CLIENT_CA))
-        context.verify_mode = ssl.CERT_OPTIONAL
+        context.verify_mode = ssl.CERT_REQUIRED if COT_TLS_REQUIRE_CLIENT_CERT else ssl.CERT_OPTIONAL
     return context
 
 
@@ -947,7 +1021,6 @@ class CotHandler(BaseRequestHandler):
         self.remote = f"{self.client_address[0]}:{self.client_address[1]}"
         self.bytes_in = 0
         self.events_in = 0
-        RELAY.add(self)
         transport = getattr(self.server, "transport", "tcp")
         peer_cert_cn = ""
         if hasattr(self.request, "getpeercert"):
@@ -955,6 +1028,14 @@ class CotHandler(BaseRequestHandler):
                 peer_cert_cn = cert_common_name(self.request.getpeercert() or {})
             except OSError:
                 peer_cert_cn = ""
+        if transport == "tls" and not client_cert_authorized(peer_cert_cn):
+            print(f"CoT reject {self.remote} transport={transport} cert_cn={peer_cert_cn or 'none'} reason=unauthorized_cert")
+            try:
+                self.request.close()
+            except OSError:
+                pass
+            return
+        RELAY.add(self)
         cert_note = f" cert_cn={peer_cert_cn}" if peer_cert_cn else " cert_cn=none"
         print(f"CoT connect {self.remote} transport={transport}{cert_note}")
 
@@ -970,6 +1051,9 @@ class CotHandler(BaseRequestHandler):
                 break
             self.bytes_in += len(chunk)
             buf += chunk
+            if len(buf) > COT_MAX_BUFFER_BYTES:
+                print(f"CoT closing {self.remote}: buffered data exceeded {COT_MAX_BUFFER_BYTES} bytes without complete event")
+                break
             while EVENT_END in buf:
                 end = buf.find(EVENT_END) + len(EVENT_END)
                 candidate, buf = buf[:end], buf[end:]
@@ -1009,10 +1093,17 @@ def heartbeat_loop():
 def parse_upload(handler):
     ctype = handler.headers.get("Content-Type", "")
     length = int(handler.headers.get("Content-Length", "0") or "0")
+    if length <= 0:
+        raise ValueError("empty upload")
+    if length > MAX_UPLOAD_BYTES:
+        raise ValueError(f"upload exceeds maximum size of {MAX_UPLOAD_BYTES} bytes")
     body = handler.rfile.read(length)
     if ctype.lower().startswith("multipart/form-data"):
-        return parse_multipart_assetfile(ctype, body)
-    return None, body
+        filename, data = parse_multipart_assetfile(ctype, body)
+    else:
+        filename, data = None, body
+    validate_datapackage_upload(filename, data)
+    return filename, data
 
 
 def parse_multipart_assetfile(ctype, body):
@@ -1030,8 +1121,28 @@ def parse_multipart_assetfile(ctype, body):
             continue
         filename_match = re.search(r'filename="([^"]*)"', headers)
         filename = filename_match.group(1) if filename_match else None
-        return filename, content.rstrip(b"\r\n")
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        return filename, content
     raise ValueError("missing multipart field assetfile")
+
+
+def validate_datapackage_upload(filename, data):
+    if not data:
+        raise ValueError("empty upload")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"datapackage exceeds maximum size of {MAX_UPLOAD_BYTES} bytes")
+    if filename and not filename.lower().endswith((".zip", ".dp.zip")):
+        raise ValueError("datapackage filename must end with .zip or .dp.zip")
+    if data[:4] != b"PK\x03\x04" and data[:4] != b"PK\x05\x06" and data[:4] != b"PK\x07\x08":
+        raise ValueError("datapackage must be a zip file")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            bad = zf.testzip()
+            if bad:
+                raise ValueError(f"datapackage zip contains corrupt entry: {bad}")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("datapackage must be a valid zip file") from exc
 
 
 class HttpHandler(BaseHTTPRequestHandler):
@@ -1041,7 +1152,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         print(f"{self.client_address[0]} - {fmt % args}")
 
     def bootstrap_authorized(self):
-        return bool(ADMIN_TOKEN and self.headers.get("X-Admin-Token", "") == ADMIN_TOKEN)
+        return bool(admin_count() == 0 and ADMIN_TOKEN and self.headers.get("X-Admin-Token", "") == ADMIN_TOKEN)
 
     def authorized(self):
         if validate_session(self.headers.get("X-Session-Token", "")):
@@ -1054,6 +1165,8 @@ class HttpHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0:
             return {}
+        if length > MAX_JSON_BYTES:
+            raise ValueError(f"JSON body exceeds maximum size of {MAX_JSON_BYTES} bytes")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def send_text(self, text, status=HTTPStatus.OK, content_type="text/plain"):
@@ -1061,6 +1174,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_security_headers(content_type)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1073,26 +1187,39 @@ class HttpHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
+        self.send_security_headers(content_type)
         self.end_headers()
         self.wfile.write(body)
 
     def send_file(self, path, filename):
+        filename = safe_download_name(filename, "datapackage.zip")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/x-zip-compressed")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_security_headers("application/x-zip-compressed")
         self.end_headers()
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
 
     def send_download(self, path, filename, content_type):
+        filename = safe_download_name(filename)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_security_headers(content_type)
         self.end_headers()
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
+
+    def send_security_headers(self, content_type):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        if content_type.startswith("text/html"):
+            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 
     def require_auth(self):
         if self.authorized():
@@ -1214,6 +1341,8 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_download(truststore, "taklite-truststore.p12", "application/x-pkcs12")
             return
         if path == "/certs/taklite-atak-ssl.dp.zip":
+            if not self.require_auth():
+                return
             datapackage = CERT_DIR / "taklite-atak-ssl.dp.zip"
             if not datapackage.exists():
                 self.send_json({"error": "certificate datapackage not found"}, HTTPStatus.NOT_FOUND)
@@ -1221,6 +1350,8 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_download(datapackage, "taklite-atak-ssl.dp.zip", "application/zip")
             return
         if path == "/certs/taklite-client.p12":
+            if not self.require_auth():
+                return
             client_cert = CERT_DIR / "taklite-client.p12"
             if not client_cert.exists():
                 self.send_json({"error": "client certificate not found"}, HTTPStatus.NOT_FOUND)
@@ -1307,20 +1438,33 @@ class HttpHandler(BaseHTTPRequestHandler):
             if path == "/api/bootstrap/admin":
                 if admin_count() > 0:
                     raise ValueError("admin user already exists")
+                remote = self.client_address[0]
+                if login_limited("bootstrap", remote, "bootstrap"):
+                    self.send_json({"error": "too many failed attempts; try again later"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 if not self.bootstrap_authorized():
+                    record_login_failure("bootstrap", remote, "bootstrap")
                     self.send_json({"error": "bootstrap token required"}, HTTPStatus.UNAUTHORIZED)
                     return
                 payload = self.read_json()
                 username = create_admin(payload.get("username", ""), payload.get("password", ""))
+                clear_login_failures("bootstrap", remote, "bootstrap")
                 session = create_session(username)
                 self.send_json({"ok": True, "username": username, "session": session})
                 return
             if path == "/api/login":
                 payload = self.read_json()
+                remote = self.client_address[0]
+                login_user = payload.get("username", "")
+                if login_limited("admin", remote, login_user):
+                    self.send_json({"error": "too many failed attempts; try again later"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 username = authenticate_admin(payload.get("username", ""), payload.get("password", ""))
                 if not username:
+                    record_login_failure("admin", remote, login_user)
                     self.send_json({"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED)
                     return
+                clear_login_failures("admin", remote, username)
                 self.send_json({"ok": True, "username": username, "session": create_session(username)})
                 return
             if path == "/api/logout":
@@ -1333,10 +1477,17 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/connect/login":
                 payload = self.read_json()
+                remote = self.client_address[0]
+                login_user = payload.get("username", "")
+                if login_limited("portal", remote, login_user):
+                    self.send_json({"error": "too many failed attempts; try again later"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 user = authenticate_portal_user(payload.get("username", ""), payload.get("password", ""))
                 if not user:
+                    record_login_failure("portal", remote, login_user)
                     self.send_json({"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED)
                     return
+                clear_login_failures("portal", remote, user["username"])
                 self.send_json({"ok": True, "session": create_portal_session(user["id"]), "user": portal_user_row(user), "cert_password": CERT_PASSWORD})
                 return
             if path == "/api/connect/logout":

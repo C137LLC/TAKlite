@@ -1,4 +1,6 @@
-<img width="3364" height="1582" alt="admin-dashboard" src="https://github.com/user-attachments/assets/a4434098-c714-41e3-9581-daccbeaaa513" />
+<p align="center">
+  <img src="assets/taklite-logo.png" alt="TAKlite - VPN TAK RELAY" width="760">
+</p>
 
 # TAKlite
 
@@ -16,6 +18,10 @@ It installs a VPN-first stack on a fresh Ubuntu VPS: WireGuard, WGDashboard, a T
 - Relays PLI, chat, markers, drawings, polygons, and CoT traffic
 - Supports datapackage upload, search, download, receive, and delete
 - Generates fresh keys, tokens, passwords, CA, and certs on every install
+
+## Dashboard Preview
+
+![TAKlite admin dashboard](docs/images/admin-dashboard.png)
 
 ## Requirements
 
@@ -105,3 +111,4 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, o
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
 - [Test Checklist](docs/test-checklist.md)
+- [Audit Notes](docs/audit-notes.md)

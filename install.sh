@@ -297,8 +297,6 @@ EOF
 
 start_taklite() {
   local cert_password="${TAKLITE_CERT_PASSWORD}"
-  local cert_user="taklite-client"
-  local dp_work_dir
 
   log "Writing TAKlite environment"
   install -d -m 700 "${BASE_DIR}/taklite/data" "${BASE_DIR}/taklite/packages" "${BASE_DIR}/taklite/certs"
@@ -353,110 +351,6 @@ EOF_CERT
       -passout pass:${cert_password}
     chmod 644 "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
   fi
-  if [[ ! -s "${BASE_DIR}/taklite/certs/${cert_user}.p12" ]]; then
-    log "Generating TAKlite client certificate for ATAK/WinTAK imports"
-    openssl genrsa -out "${BASE_DIR}/taklite/certs/${cert_user}.key" 3072
-    openssl req -new \
-      -key "${BASE_DIR}/taklite/certs/${cert_user}.key" \
-      -out "${BASE_DIR}/taklite/certs/${cert_user}.csr" \
-      -subj "/CN=${cert_user}"
-    cat >"${BASE_DIR}/taklite/certs/${cert_user}.ext" <<EOF_CLIENT_CERT
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = clientAuth
-EOF_CLIENT_CERT
-    openssl x509 -req \
-      -in "${BASE_DIR}/taklite/certs/${cert_user}.csr" \
-      -CA "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
-      -CAkey "${BASE_DIR}/taklite/certs/taklite-ca.key" \
-      -CAcreateserial \
-      -out "${BASE_DIR}/taklite/certs/${cert_user}.crt" \
-      -days 825 -sha256 \
-      -extfile "${BASE_DIR}/taklite/certs/${cert_user}.ext"
-    openssl pkcs12 -export \
-      -inkey "${BASE_DIR}/taklite/certs/${cert_user}.key" \
-      -in "${BASE_DIR}/taklite/certs/${cert_user}.crt" \
-      -certfile "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
-      -out "${BASE_DIR}/taklite/certs/${cert_user}.p12" \
-      -name "${cert_user}" \
-      -passout pass:${cert_password}
-    chmod 600 "${BASE_DIR}/taklite/certs/${cert_user}.key"
-    chmod 644 "${BASE_DIR}/taklite/certs/${cert_user}.crt" "${BASE_DIR}/taklite/certs/${cert_user}.p12"
-  fi
-  if [[ ! -s "${BASE_DIR}/taklite/certs/taklite-atak-ssl.dp.zip" ]]; then
-    log "Generating ATAK/WinTAK server certificate datapackage"
-    dp_work_dir="$(mktemp -d)"
-    cat >"${dp_work_dir}/server.pref" <<EOF_SERVER_PREF
-<?xml version='1.0' encoding='ASCII' standalone='yes'?>
-<preferences>
-  <preference version="1" name="cot_streams">
-    <entry key="count" class="class java.lang.Integer">1</entry>
-    <entry key="description0" class="class java.lang.String">TAKlite</entry>
-    <entry key="enabled0" class="class java.lang.Boolean">true</entry>
-    <entry key="connectString0" class="class java.lang.String">${TAKLITE_BIND_IP}:8089:ssl</entry>
-    <entry key="caLocation0" class="class java.lang.String">cert/${TAKLITE_BIND_IP}.p12</entry>
-    <entry key="caPassword0" class="class java.lang.String">${cert_password}</entry>
-    <entry key="clientPassword0" class="class java.lang.String">${cert_password}</entry>
-    <entry key="certificateLocation0" class="class java.lang.String">cert/${cert_user}.p12</entry>
-  </preference>
-  <preference version="1" name="com.atakmap.app_preferences">
-    <entry key="displayServerConnectionWidget" class="class java.lang.Boolean">true</entry>
-    <entry key="caLocation" class="class java.lang.String">cert/${TAKLITE_BIND_IP}.p12</entry>
-    <entry key="caPassword" class="class java.lang.String">${cert_password}</entry>
-    <entry key="clientPassword" class="class java.lang.String">${cert_password}</entry>
-    <entry key="certificateLocation" class="class java.lang.String">cert/${cert_user}.p12</entry>
-  </preference>
-</preferences>
-EOF_SERVER_PREF
-    cat >"${dp_work_dir}/taklite-server.pref" <<EOF_JSON_PREF
-{
-  "name": "PreferenceControl",
-  "version": 1,
-  "takServers": [
-    {
-      "description": "TAKlite",
-      "enabled": true,
-      "connectString": "${TAKLITE_BIND_IP}:8089:ssl",
-      "compress": false,
-      "caLocation": "cert/${TAKLITE_BIND_IP}.p12",
-      "caPassword": "${cert_password}",
-      "clientPassword": "${cert_password}",
-      "certificateLocation": "cert/${cert_user}.p12"
-    }
-  ]
-}
-EOF_JSON_PREF
-    cat >"${dp_work_dir}/manifest.xml" <<EOF_MANIFEST
-<MissionPackageManifest version="2">
-  <Configuration>
-    <Parameter name="uid" value="taklite-${TAKLITE_BIND_IP}"/>
-    <Parameter name="name" value="TAKlite ${TAKLITE_BIND_IP} SSL"/>
-    <Parameter name="onReceiveDelete" value="true"/>
-  </Configuration>
-  <Contents>
-    <Content ignore="false" zipEntry="certs\\server.pref"/>
-    <Content ignore="false" zipEntry="certs\\taklite-server.pref"/>
-    <Content ignore="false" zipEntry="certs\\${TAKLITE_BIND_IP}.p12"/>
-    <Content ignore="false" zipEntry="certs\\${cert_user}.p12"/>
-  </Contents>
-</MissionPackageManifest>
-EOF_MANIFEST
-    cp "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12" "${dp_work_dir}/${TAKLITE_BIND_IP}.p12"
-    cp "${BASE_DIR}/taklite/certs/${cert_user}.p12" "${dp_work_dir}/${cert_user}.p12"
-    (
-      cd "${dp_work_dir}"
-      install -d certs
-      cp server.pref "certs/server.pref"
-      cp taklite-server.pref "certs/taklite-server.pref"
-      cp "${TAKLITE_BIND_IP}.p12" "certs/${TAKLITE_BIND_IP}.p12"
-      cp "${cert_user}.p12" "certs/${cert_user}.p12"
-      zip -q "${BASE_DIR}/taklite/certs/taklite-atak-ssl.dp.zip" \
-        manifest.xml server.pref taklite-server.pref "${TAKLITE_BIND_IP}.p12" "${cert_user}.p12" \
-        certs/server.pref certs/taklite-server.pref "certs/${TAKLITE_BIND_IP}.p12" "certs/${cert_user}.p12"
-    )
-    rm -rf "${dp_work_dir}"
-    chmod 644 "${BASE_DIR}/taklite/certs/taklite-atak-ssl.dp.zip"
-  fi
   cat >"${BASE_DIR}/.env" <<EOF
 WG_BIND_IP=${TAKLITE_BIND_IP}
 TAKLITE_PUBLIC_HOST=${TAKLITE_PUBLIC_HOST}
@@ -467,6 +361,9 @@ TAKLITE_COT_HOST_PORT=58087
 TAKLITE_COT_TLS_HOST_PORT=8089
 TAKLITE_HTTP_HOST_PORT=8080
 TAKLITE_HTTPS_HOST_PORT=8443
+TAKLITE_MAX_UPLOAD_BYTES=268435456
+TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=false
+TAKLITE_ALLOW_LEGACY_CLIENT_CERT=true
 EOF
   chmod 600 "${BASE_DIR}/.env"
 

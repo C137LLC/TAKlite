@@ -4,6 +4,13 @@ services:
       context: ./docker/taklite
     container_name: taklite
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       TAKLITE_HTTP_BIND: "0.0.0.0"
       TAKLITE_HTTP_PORT: "8080"
@@ -22,6 +29,9 @@ services:
       TAKLITE_CERT_PASSWORD: "${TAKLITE_CERT_PASSWORD:?set TAKLITE_CERT_PASSWORD in .env}"
       TAKLITE_DB: "/data/taklite.sqlite3"
       TAKLITE_PACKAGE_DIR: "/packages"
+      TAKLITE_MAX_UPLOAD_BYTES: "${TAKLITE_MAX_UPLOAD_BYTES:-268435456}"
+      TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT: "${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT:-false}"
+      TAKLITE_ALLOW_LEGACY_CLIENT_CERT: "${TAKLITE_ALLOW_LEGACY_CLIENT_CERT:-true}"
     volumes:
       - ./taklite/data:/data
       - ./taklite/packages:/packages

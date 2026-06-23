@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 460" role="img" aria-labelledby="title desc">
+  <title id="title">TAKlite logo</title>
+  <desc id="desc">The Recce topographic tactical mark with TAKlite wordmark and VPN TAK RELAY subtitle.</desc>
+  <rect width="1600" height="460" fill="#f6f8f5"/>
+  <image href="taklite-mark.png" x="64" y="50" width="360" height="360" preserveAspectRatio="xMidYMid meet"/>
+  <g transform="translate(490 130)">
+    <text x="0" y="120" fill="#101713" font-family="Inter, Arial, Helvetica, sans-serif" font-size="132" font-weight="800" letter-spacing="0">TAK<tspan fill="#2f6b4f">lite</tspan></text>
+    <text x="6" y="193" fill="#66736a" font-family="Inter, Arial, Helvetica, sans-serif" font-size="36" font-weight="500" letter-spacing="0">VPN TAK RELAY</text>
+  </g>
+</svg>

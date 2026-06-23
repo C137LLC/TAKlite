@@ -62,7 +62,7 @@ Create a fresh Ubuntu 26.04 LTS x64 VPS.
 Option A, deploy from a GitHub clone:
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/taklite.git
+git clone https://github.com/C137LLC/TAKlite.git
 cd taklite
 scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
 ```
@@ -137,6 +137,12 @@ Pull the admin WireGuard config:
 
 ```bash
 scp root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
+```
+
+Or use `rsync`:
+
+```bash
+rsync -av root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
 ```
 
 Import `admin-wg0.conf` into WireGuard and connect.

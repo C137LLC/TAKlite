@@ -40,7 +40,7 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `taklite/certs`, `taklite/
 Option A, deploy from a GitHub clone:
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/taklite.git
+git clone https://github.com/C137LLC/TAKlite.git
 cd taklite
 scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
 ```
@@ -130,6 +130,12 @@ From the admin computer:
 
 ```bash
 scp root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
+```
+
+Or:
+
+```bash
+rsync -av root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
 ```
 
 Import `admin-wg0.conf` into WireGuard and connect.

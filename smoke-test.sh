@@ -3,18 +3,38 @@ set -Eeuo pipefail
 
 HOST="${1:-10.66.66.1}"
 TOKEN="${2:-}"
+TOKEN_TYPE="${3:-admin-token}"
 
 if [[ -z "${TOKEN}" ]]; then
-  echo "usage: ./smoke-test.sh <host> <taklite-admin-token>" >&2
+  echo "usage: ./smoke-test.sh <host> <bootstrap-token-or-session-token> [admin-token|session-token]" >&2
   exit 2
 fi
 
+case "${TOKEN_TYPE}" in
+  admin-token)
+    AUTH_HEADER="X-Admin-Token: ${TOKEN}"
+    ;;
+  session-token)
+    AUTH_HEADER="X-Session-Token: ${TOKEN}"
+    ;;
+  *)
+    echo "token type must be admin-token or session-token" >&2
+    exit 2
+    ;;
+esac
+
 echo "Checking TAKlite health..."
-curl -fsS -H "X-Admin-Token: ${TOKEN}" "http://${HOST}:8080/api/health"
+curl -fsS "http://${HOST}:8080/api/health"
 echo
 
 tmp_pkg="$(mktemp -t taklite-smoke.XXXXXX.dp.zip)"
-printf 'TAKlite smoke package %s\n' "$(date -u +%FT%TZ)" >"${tmp_pkg}"
+pkg_dir="$(mktemp -d)"
+trap 'rm -f "${tmp_pkg}"; rm -rf "${pkg_dir}"' EXIT
+printf 'TAKlite smoke package %s\n' "$(date -u +%FT%TZ)" >"${pkg_dir}/README.txt"
+(
+  cd "${pkg_dir}"
+  zip -q "${tmp_pkg}" README.txt
+)
 
 echo "Uploading datapackage..."
 upload_url="$(
@@ -25,7 +45,7 @@ upload_url="$(
 echo "${upload_url}"
 
 echo "Listing datapackages..."
-curl -fsS -H "X-Admin-Token: ${TOKEN}" "http://${HOST}:8080/api/datapackages"
+curl -fsS -H "${AUTH_HEADER}" "http://${HOST}:8080/api/datapackages"
 echo
 
 echo "CoT relay port check..."
