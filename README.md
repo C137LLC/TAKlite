@@ -110,5 +110,6 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, o
 - [User Guide](docs/user-guide.md)
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
+- [Upgrade Guide](docs/upgrade-guide.md)
 - [Test Checklist](docs/test-checklist.md)
 - [Audit Notes](docs/audit-notes.md)

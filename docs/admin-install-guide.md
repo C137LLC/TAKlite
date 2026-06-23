@@ -2,6 +2,8 @@
 
 This guide walks an admin through installing TAKlite on a brand new Ubuntu 26.04 LTS x64 VPS, joining the WireGuard VPN, opening the dashboards, and creating ATAK/WinTAK connection packages.
 
+For existing servers, do not rerun the installer. Use the [Upgrade Guide](upgrade-guide.md) to preserve WireGuard peers, TAKlite certs, users, datapackages, and database state.
+
 ## What The Admin Needs
 
 - Fresh Ubuntu 26.04 LTS x64 VPS
