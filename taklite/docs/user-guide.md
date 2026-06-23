@@ -1,0 +1,326 @@
+# TAKlite User Guide
+
+## Purpose
+
+TAKlite is a lightweight TAK relay and datapackage service for small ATAK/WinTAK teams over WireGuard VPN.
+
+It provides:
+
+- WireGuard VPN access for admins and TAK clients
+- WGDashboard for VPN peer management
+- TAKlite admin dashboard for TAK users, clients, and datapackages
+- TLS CoT TCP for ATAK/WinTAK on `10.66.66.1:8089`
+- Plain CoT TCP test port on `10.66.66.1:58087`
+- Marti-style datapackage upload, search, download, and delete
+- Connection User portal for downloading ATAK/WinTAK `.dp.zip` certificate bundles
+
+## Network Model
+
+TAKlite is designed to be VPN-first.
+
+Public internet:
+
+- `51820/udp` WireGuard only
+- Temporary `22/tcp` SSH only during setup, then close or restrict it
+
+VPN-only:
+
+- `22/tcp` SSH
+- `10086/tcp` WGDashboard
+- `8080/tcp` TAKlite admin UI, client portal, and HTTP datapackage API
+- `8443/tcp` TAKlite HTTPS datapackage API
+- `58087/tcp` plain CoT TCP
+- `8089/tcp` TLS CoT TCP
+
+## Per-Install Security
+
+Every fresh VPS installation generates new security material.
+
+Do not copy `/root/taklite-admin`, `/etc/wireguard`, `taklite/certs`, `taklite/data`, or an old `.env` from one VPS to another.
+
+Generated per install:
+
+- WireGuard server private key
+- Initial admin WireGuard peer key and preshared key
+- WGDashboard password
+- TAKlite bootstrap token
+- TAKlite certificate password
+- TAKlite local certificate authority
+- TAKlite server certificate
+- Generated ATAK/WinTAK user certificates
+
+The installer saves root-only recovery notes here:
+
+```text
+/root/taklite-admin/README.txt
+```
+
+## Fresh VPS Install
+
+Create a fresh Ubuntu 26.04 LTS x64 VPS.
+
+Option A, deploy from a GitHub clone:
+
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/taklite.git
+cd taklite
+scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
+```
+
+On the VPS:
+
+```bash
+cd /root/taklite
+chmod +x install.sh smoke-test.sh
+./install.sh
+```
+
+Option B, deploy from a release zip:
+
+```bash
+scp taklite-vps-bundle.zip root@YOUR_VPS_PUBLIC_IP:/root/
+```
+
+On the VPS:
+
+```bash
+cd /root
+unzip taklite-vps-bundle.zip
+cd /root/taklite-vps-bundle
+chmod +x install.sh smoke-test.sh
+./install.sh
+```
+
+Use the defaults unless the VPS environment requires different values.
+
+Important defaults:
+
+```text
+WireGuard server: 10.66.66.1
+Admin VPN peer: 10.66.66.2
+WGDashboard: http://10.66.66.1:10086
+TAKlite admin: http://10.66.66.1:8080/
+Client portal: http://10.66.66.1:8080/connect/
+TLS CoT: 10.66.66.1:8089
+Plain CoT: 10.66.66.1:58087
+Certificate password: generated per install and saved in `/root/taklite-admin/README.txt`
+```
+
+## Save Install Output
+
+At the end of installation, save:
+
+- Admin WireGuard `.conf`
+- Admin WireGuard QR path
+- WGDashboard username/password
+- TAKlite bootstrap token
+- TAKlite admin URL
+
+Recovery files are saved on the VPS:
+
+```text
+/root/taklite-admin/README.txt
+/root/taklite-admin/bootstrap-token.txt
+/root/taklite-admin/admin-wg0.conf
+/root/taklite-admin/admin-wg0.png
+```
+
+If needed:
+
+```bash
+cat /root/taklite-admin/README.txt
+```
+
+## Admin VPN Login
+
+Pull the admin WireGuard config:
+
+```bash
+scp root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
+```
+
+Import `admin-wg0.conf` into WireGuard and connect.
+
+Open:
+
+```text
+WGDashboard: http://10.66.66.1:10086
+TAKlite:     http://10.66.66.1:8080/
+```
+
+## First TAKlite Admin Account
+
+Open:
+
+```text
+http://10.66.66.1:8080/
+```
+
+Use the bootstrap token from install output or:
+
+```bash
+cat /root/taklite-admin/bootstrap-token.txt
+```
+
+Create the first TAKlite admin username/password.
+
+## Create A TAK Device User
+
+Use this workflow for each ATAK/WinTAK device.
+
+1. In WGDashboard, create a WireGuard peer for the user device.
+2. Give the user the WireGuard QR or `.conf`.
+3. In TAKlite, open Connection Users.
+4. Enter a username, temporary password, and optional note.
+5. Click Create User.
+6. The user appears in the Connection Users table.
+7. Use Download DP.zip, QR, or Copy URL.
+
+Connection User actions:
+
+- Download DP.zip: admin downloads the user's ATAK/WinTAK cert bundle
+- Copy URL: copies the VPN-only portal URL
+- QR: shows a QR for the user's portal page
+- Edit: updates display name and note
+- Reset Password: changes the user's portal password
+- Allow/Disable Re-download: controls repeated downloads
+- Reissue: revokes the old cert bundle and creates a fresh one
+- Revoke: disables the user and cert package
+- Delete: removes the user record, with optional generated file deletion
+
+## User Device Flow
+
+For the end user:
+
+1. Scan/import the WireGuard config.
+2. Connect WireGuard.
+3. Open the TAKlite portal QR or URL:
+
+```text
+http://10.66.66.1:8080/connect/
+```
+
+4. Log in with the username/password from the admin.
+5. Download the `.dp.zip`.
+6. Import the `.dp.zip` into ATAK or WinTAK.
+7. If prompted, use the certificate password from:
+
+```text
+/root/taklite-admin/README.txt
+```
+
+The imported package configures:
+
+```text
+Host: 10.66.66.1
+Port: 8089
+Protocol: SSL/TLS
+```
+
+## ATAK Test
+
+On Android:
+
+1. Confirm WireGuard handshake is active.
+2. Import the `.dp.zip` in ATAK.
+3. Confirm the server connection turns green.
+4. Drop a point.
+5. Send chat.
+6. Send a datapackage.
+7. Confirm other clients receive the point/chat/datapackage.
+
+## WinTAK Test
+
+On Windows:
+
+1. Confirm WireGuard is connected.
+2. Import the `.dp.zip` in WinTAK.
+3. Confirm the server connection turns green.
+4. Drop a point.
+5. Send chat.
+6. Send a datapackage.
+7. Confirm ATAK receives it.
+
+## Datapackage Admin
+
+The TAKlite dashboard shows uploaded datapackages.
+
+Admin actions:
+
+- Download datapackage to local machine
+- Delete datapackage record and stored file
+
+Expected API activity in logs:
+
+```text
+POST /Marti/sync/missionupload
+GET /Marti/sync/search
+GET /Marti/sync/content?hash=...
+```
+
+## Connected Clients
+
+The dashboard shows:
+
+- Callsign/name
+- UID
+- IP address
+- Transport mode
+- Client certificate common name
+- Connection uptime
+- Connected time
+- Last seen time
+
+TLS clients should show a certificate common name matching the created Connection User or package name.
+
+## Troubleshooting
+
+Watch logs:
+
+```bash
+cd /root/taklite-vps-bundle
+docker logs -f taklite
+```
+
+Check services:
+
+```bash
+docker compose ps
+curl -fsS http://10.66.66.1:8080/api/health
+wg show
+```
+
+Check ports:
+
+```bash
+ss -tulpn | grep -E '(:8080|:8443|:58087|:8089|:10086|:51820)'
+```
+
+Common issues:
+
+- Portal login invalid: confirm the user was created under Connection Users, not Connection Packages.
+- Invalid truststore: create a fresh Connection User after deploy and import the newest `.dp.zip`.
+- Red TAK connection: confirm VPN is connected, use `10.66.66.1:8089:ssl`, and watch logs for `cert_cn=...`.
+- Datapackage send fails: confirm the TAK client has the server connection from the `.dp.zip` and can reach `10.66.66.1:8080` or `10.66.66.1:8443` over VPN.
+
+## Smoke Test
+
+From the VPS:
+
+```bash
+cd /root/taklite-vps-bundle
+./smoke-test.sh 10.66.66.1 TAKLITE_BOOTSTRAP_TOKEN_OR_ADMIN_TOKEN
+```
+
+## Routine Admin Checklist
+
+1. Connect admin WireGuard.
+2. Open WGDashboard.
+3. Open TAKlite admin dashboard.
+4. Create WireGuard peer for user.
+5. Create TAKlite Connection User.
+6. Give user WireGuard QR.
+7. Give user portal QR/link and password.
+8. User downloads/imports `.dp.zip`.
+9. Confirm client appears in Connected Clients.
+10. Test PLI, chat, marker drops, and datapackages.

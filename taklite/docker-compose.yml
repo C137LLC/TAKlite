@@ -1,0 +1,33 @@
+services:
+  taklite:
+    build:
+      context: ./docker/taklite
+    container_name: taklite
+    restart: unless-stopped
+    environment:
+      TAKLITE_HTTP_BIND: "0.0.0.0"
+      TAKLITE_HTTP_PORT: "8080"
+      TAKLITE_HTTPS_BIND: "0.0.0.0"
+      TAKLITE_HTTPS_PORT: "8443"
+      TAKLITE_HTTPS_CERT: "/certs/taklite.crt"
+      TAKLITE_HTTPS_KEY: "/certs/taklite.key"
+      TAKLITE_CLIENT_CA: "/certs/taklite-ca.crt"
+      TAKLITE_COT_BIND: "0.0.0.0"
+      TAKLITE_COT_PORT: "58087"
+      TAKLITE_COT_TLS_BIND: "0.0.0.0"
+      TAKLITE_COT_TLS_PORT: "8089"
+      TAKLITE_ADMIN_TOKEN: "${TAKLITE_ADMIN_TOKEN:?set TAKLITE_ADMIN_TOKEN in .env}"
+      TAKLITE_PUBLIC_HOST: "${TAKLITE_PUBLIC_HOST:-10.66.66.1}"
+      TAKLITE_SERVER_HOST: "${TAKLITE_SERVER_HOST:-10.66.66.1}"
+      TAKLITE_CERT_PASSWORD: "${TAKLITE_CERT_PASSWORD:?set TAKLITE_CERT_PASSWORD in .env}"
+      TAKLITE_DB: "/data/taklite.sqlite3"
+      TAKLITE_PACKAGE_DIR: "/packages"
+    volumes:
+      - ./taklite/data:/data
+      - ./taklite/packages:/packages
+      - ./taklite/certs:/certs
+    ports:
+      - "${WG_BIND_IP:-10.66.66.1}:${TAKLITE_COT_HOST_PORT:-58087}:58087/tcp"
+      - "${WG_BIND_IP:-10.66.66.1}:${TAKLITE_COT_TLS_HOST_PORT:-8089}:8089/tcp"
+      - "${WG_BIND_IP:-10.66.66.1}:${TAKLITE_HTTP_HOST_PORT:-8080}:8080/tcp"
+      - "${WG_BIND_IP:-10.66.66.1}:${TAKLITE_HTTPS_HOST_PORT:-8443}:8443/tcp"
