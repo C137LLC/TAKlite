@@ -19,7 +19,6 @@ taklite/**/*.db
 # WireGuard/admin recovery material
 taklite-admin/
 *.conf
-*.png
 
 # Python/build/cache
 __pycache__/
