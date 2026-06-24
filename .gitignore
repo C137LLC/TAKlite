@@ -25,6 +25,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+frontend/node_modules/
+frontend/dist/
 
 # Archives and local release artifacts
 *.zip

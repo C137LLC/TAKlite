@@ -144,6 +144,7 @@ merge_env_defaults() {
   append_env_default "${env_file}" "TAKLITE_COT_TLS_HOST_PORT" "8089"
   append_env_default "${env_file}" "TAKLITE_HTTP_HOST_PORT" "8080"
   append_env_default "${env_file}" "TAKLITE_HTTPS_HOST_PORT" "8443"
+  append_env_default "${env_file}" "TAKLITE_WGDASHBOARD_URL" "http://10.66.66.1:10086"
   append_env_default "${env_file}" "TAKLITE_MAX_UPLOAD_BYTES" "268435456"
   append_env_default "${env_file}" "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT" "false"
   append_env_default "${env_file}" "TAKLITE_ALLOW_LEGACY_CLIENT_CERT" "true"

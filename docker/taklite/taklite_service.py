@@ -42,7 +42,9 @@ SERVER_HOST = os.environ.get("TAKLITE_SERVER_HOST", PUBLIC_HOST or "10.66.66.1")
 CERT_PASSWORD = os.environ.get("TAKLITE_CERT_PASSWORD", "")
 DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
-VERSION = "TAKlite 0.2"
+STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
+WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
+VERSION = "TAKlite 0.2.5"
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
@@ -873,9 +875,7 @@ def create_cert_profile(name, description=""):
         zf.writestr("certs/server.pref", server_pref)
         zf.writestr("taklite-server.pref", json_pref)
         zf.writestr("certs/taklite-server.pref", json_pref)
-        zf.write(truststore, truststore.name)
         zf.write(truststore, f"certs/{truststore.name}")
-        zf.write(client_p12, client_p12.name)
         zf.write(client_p12, f"certs/{client_p12.name}")
     dp_zip.chmod(0o644)
 
@@ -1215,13 +1215,32 @@ class HttpHandler(BaseHTTPRequestHandler):
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
 
+    def send_static_file(self, path):
+        content_types = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".ico": "image/x-icon",
+            ".json": "application/json",
+        }
+        content_type = content_types.get(path.suffix.lower(), "application/octet-stream")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_security_headers(content_type)
+        self.end_headers()
+        with path.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile)
+
     def send_security_headers(self, content_type):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
         if content_type.startswith("text/html"):
-            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 
     def require_auth(self):
         if self.authorized():
@@ -1241,7 +1260,24 @@ class HttpHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         qs = parse_qs(parsed.query)
         if path == "/":
-            self.send_text(INDEX_HTML, content_type="text/html; charset=utf-8")
+            index = STATIC_DIR / "index.html"
+            if index.exists():
+                self.send_static_file(index)
+            else:
+                self.send_text(INDEX_HTML, content_type="text/html; charset=utf-8")
+            return
+        if path.startswith("/assets/"):
+            rel = Path(path.lstrip("/"))
+            static_path = (STATIC_DIR / rel).resolve()
+            try:
+                static_path.relative_to(STATIC_DIR.resolve())
+            except ValueError:
+                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if not static_path.is_file():
+                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_static_file(static_path)
             return
         if path == "/connect":
             self.send_text(CONNECT_HTML, content_type="text/html; charset=utf-8")
@@ -1377,6 +1413,9 @@ class HttpHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             tls_enabled = HTTPS_CERT.exists() and HTTPS_KEY.exists()
             self.send_json({"ok": True, "version": VERSION, "cot_port": COT_PORT, "cot_tls_port": COT_TLS_PORT if tls_enabled else None, "http_port": HTTP_PORT, "https_port": HTTPS_PORT if tls_enabled else None, "clients": len(RELAY.snapshot()), "packages": len(list_packages()), "auth_enabled": bool(ADMIN_TOKEN)})
+            return
+        if path == "/api/ui-config":
+            self.send_json({"wgDashboardUrl": WG_DASHBOARD_URL})
             return
         if path == "/api/datapackages":
             if not self.require_auth():
