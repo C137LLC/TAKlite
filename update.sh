@@ -209,6 +209,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "${RELEASE_ZIP}" && -z "${SOURCE_DIR}" ]]; then
+  usage
+  die "provide a release zip, or pass --from-dir with a staged TAKlite source directory"
+fi
+
 need_root
 require_command docker
 require_command rsync
@@ -229,8 +234,6 @@ if [[ -n "${RELEASE_ZIP}" ]]; then
   SOURCE_DIR="$(find_source_dir "${STAGE_DIR}")" || die "could not find TAKlite source in ${RELEASE_ZIP}"
 elif [[ -n "${SOURCE_DIR}" ]]; then
   [[ -f "${SOURCE_DIR}/docker-compose.yml" ]] || die "--from-dir is missing docker-compose.yml: ${SOURCE_DIR}"
-else
-  SOURCE_DIR="${SCRIPT_DIR}"
 fi
 
 SOURCE_DIR="$(cd "${SOURCE_DIR}" && pwd)"
