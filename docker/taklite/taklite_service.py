@@ -35,6 +35,7 @@ COT_BIND = os.environ.get("TAKLITE_COT_BIND", "0.0.0.0")
 COT_PORT = int(os.environ.get("TAKLITE_COT_PORT", "58087"))
 COT_TLS_BIND = os.environ.get("TAKLITE_COT_TLS_BIND", "0.0.0.0")
 COT_TLS_PORT = int(os.environ.get("TAKLITE_COT_TLS_PORT", "8089"))
+COT_TLS_PUBLIC_PORT = int(os.environ.get("TAKLITE_COT_TLS_PUBLIC_PORT", str(COT_TLS_PORT)))
 ADMIN_TOKEN = os.environ.get("TAKLITE_ADMIN_TOKEN", "")
 PUBLIC_HOST = os.environ.get("TAKLITE_PUBLIC_HOST", "")
 SERVER_HOST = os.environ.get("TAKLITE_SERVER_HOST", PUBLIC_HOST or "10.66.66.1")
@@ -744,17 +745,18 @@ def ensure_truststore_file():
     ca_cert = CERT_DIR / "taklite-ca.crt"
     ca_key = CERT_DIR / "taklite-ca.key"
     truststore = CERT_DIR / f"{SERVER_HOST}.p12"
+    tmp_truststore = CERT_DIR / f".{SERVER_HOST}.p12.tmp"
     if not ca_cert.exists() or not ca_key.exists():
         raise RuntimeError("TAKlite CA is missing; rerun the installer or restore taklite-ca.crt/taklite-ca.key")
-    if not truststore.exists():
-        run_openssl([
-            "pkcs12", "-export", "-nokeys",
-            "-in", str(ca_cert),
-            "-out", str(truststore),
-            "-name", "taklite-ca",
-            "-passout", f"pass:{CERT_PASSWORD}",
-        ])
-        truststore.chmod(0o644)
+    run_openssl([
+        "pkcs12", "-export", "-nokeys",
+        "-in", str(ca_cert),
+        "-out", str(tmp_truststore),
+        "-name", "taklite-ca",
+        "-passout", f"pass:{CERT_PASSWORD}",
+    ])
+    tmp_truststore.replace(truststore)
+    truststore.chmod(0o644)
     return truststore
 
 
@@ -828,7 +830,7 @@ def create_cert_profile(name, description=""):
     client_crt = CERT_DIR / f"{name}.crt"
     client_p12 = CERT_DIR / f"{name}.p12"
     dp_zip = CERT_DIR / f"{name}-{SERVER_HOST}.dp.zip"
-    connect_string = f"{SERVER_HOST}:{COT_TLS_PORT}:ssl"
+    connect_string = f"{SERVER_HOST}:{COT_TLS_PUBLIC_PORT}:ssl"
     download_token = secrets.token_urlsafe(18)
 
     with db_connect() as conn:

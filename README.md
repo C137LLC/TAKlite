@@ -53,7 +53,9 @@ chmod +x install.sh smoke-test.sh
 ./install.sh
 ```
 
-The installer prompts for environment-specific values and prints the admin WireGuard profile, WGDashboard login, TAKlite bootstrap token, and certificate password at completion.
+The installer prompts for environment-specific values and prints the admin WireGuard profile, WGDashboard login, TAKlite bootstrap token, and certificate password at completion. The ATAK/WinTAK certificate password defaults to `atakatak` unless you change it during install.
+
+If this VPS is also running Zello On-Prem, leave Zello on `8443` and set TAKlite HTTPS/Marti host port to `18443` during install.
 
 Root-only recovery notes are saved on the VPS:
 
@@ -99,9 +101,10 @@ Every clean install generates new:
 - WireGuard server and admin peer keys
 - WGDashboard password
 - TAKlite bootstrap token
-- TAKlite certificate password
 - Local CA and server certificate
 - ATAK/WinTAK client certificates
+
+The TAKlite certificate password defaults to `atakatak` for easier ATAK/WinTAK imports unless changed during install.
 
 Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, or `taklite/data` between VPS deployments.
 
@@ -110,6 +113,7 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, o
 - [User Guide](docs/user-guide.md)
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
+- [Deployment And Update Lifecycle](docs/deployment-lifecycle.md)
 - [Upgrade Guide](docs/upgrade-guide.md)
 - [Test Checklist](docs/test-checklist.md)
 - [Audit Notes](docs/audit-notes.md)

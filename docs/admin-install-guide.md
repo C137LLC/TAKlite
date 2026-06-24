@@ -78,7 +78,7 @@ chmod +x install.sh smoke-test.sh
 ./install.sh
 ```
 
-Use defaults unless your VPS environment requires different values.
+Use defaults unless your VPS environment requires different values. If Zello On-Prem is on the same VPS, keep Zello on `8443` and set TAKlite HTTPS/Marti host port to `18443` during the TAKlite prompts.
 
 Important defaults:
 
@@ -93,7 +93,14 @@ Plain CoT TCP: 10.66.66.1:58087
 TLS CoT TCP: 10.66.66.1:8089
 Datapackage HTTP: http://10.66.66.1:8080/Marti
 Datapackage HTTPS: https://10.66.66.1:8443/Marti
-Certificate password: generated per install and printed in `/root/taklite-admin/README.txt`
+Certificate password: atakatak unless changed during install; printed in `/root/taklite-admin/README.txt`
+```
+
+Zello co-hosted default:
+
+```text
+Datapackage HTTPS: https://10.66.66.1:18443/Marti
+ATAK secure server / datapackage port: 18443
 ```
 
 ## Save The Bootstrap Output
@@ -249,7 +256,7 @@ The generated package contains:
 - TAKlite truststore `.p12`
 - client certificate `.p12`
 
-The certificate password is generated fresh for every VPS install. It is printed at install completion and saved in:
+The certificate password defaults to `atakatak` for easier ATAK/WinTAK imports unless changed during install. It is printed at install completion and saved in:
 
 ```text
 /root/taklite-admin/README.txt
@@ -280,7 +287,7 @@ On the Android device:
 2. Copy or download the generated `.dp.zip` to the phone.
 3. Open ATAK.
 4. Import the datapackage.
-5. If prompted for certificate password, use the generated password from `/root/taklite-admin/README.txt`.
+5. If prompted for certificate password, use `atakatak` unless the admin changed it during install. The active value is saved in `/root/taklite-admin/README.txt`.
 6. Confirm the TAKlite server connection turns green.
 
 Then test:
@@ -297,7 +304,7 @@ On the Windows computer:
 
 1. Connect WireGuard VPN.
 2. Import the generated `.dp.zip` into WinTAK.
-3. If prompted for certificate password, use the generated password from `/root/taklite-admin/README.txt`.
+3. If prompted for certificate password, use `atakatak` unless the admin changed it during install. The active value is saved in `/root/taklite-admin/README.txt`.
 4. Confirm the TAKlite server connection turns green.
 
 WinTAK can also be manually pointed at:
@@ -371,7 +378,7 @@ Expected VPN-only services:
 22/tcp      SSH over VPN
 10086/tcp   WGDashboard
 8080/tcp    TAKlite UI and HTTP datapackage API
-8443/tcp    TAKlite HTTPS datapackage API
+8443/tcp    TAKlite HTTPS datapackage API, or 18443/tcp when co-hosted with Zello
 58087/tcp   plain CoT TCP
 8089/tcp   TLS CoT TCP
 ```

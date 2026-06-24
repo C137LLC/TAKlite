@@ -77,7 +77,7 @@ install_packages() {
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
-    python3-venv qrencode wireguard-tools docker.io openssl zip "${compose_package}"
+    python3-venv qrencode rsync wireguard-tools docker.io openssl zip "${compose_package}"
   systemctl enable --now docker
   systemctl enable --now fail2ban
 }
@@ -109,7 +109,11 @@ collect_settings() {
   TAKLITE_BIND_IP="$(prompt_default "TAKlite bind IP" "${WG_SERVER_IP}")"
   TAKLITE_PUBLIC_HOST="$(prompt_default "TAKlite API host used in package URLs" "${TAKLITE_BIND_IP}")"
   TAKLITE_ADMIN_TOKEN="$(prompt_default "TAKlite admin token" "$(random_token)")"
-  TAKLITE_CERT_PASSWORD="$(random_token)"
+  TAKLITE_CERT_PASSWORD="$(prompt_default "ATAK/WinTAK certificate password" "atakatak")"
+  TAKLITE_COT_HOST_PORT="$(prompt_default "TAKlite plain CoT TCP host port" "58087")"
+  TAKLITE_COT_TLS_HOST_PORT="$(prompt_default "TAKlite TLS CoT TCP host port" "8089")"
+  TAKLITE_HTTP_HOST_PORT="$(prompt_default "TAKlite HTTP/admin host port" "8080")"
+  TAKLITE_HTTPS_HOST_PORT="$(prompt_default "TAKlite HTTPS/Marti host port" "8443")"
 }
 
 write_wireguard_config() {
@@ -135,20 +139,20 @@ SaveConfig = false
 PostUp = iptables -C INPUT -p udp --dport ${WG_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT
 PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport 22 -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport 22 -j ACCEPT
 PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${WGD_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${WGD_PORT} -j ACCEPT
-PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport 8080 -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport 8080 -j ACCEPT
-PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport 8443 -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport 8443 -j ACCEPT
-PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport 58087 -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport 58087 -j ACCEPT
-PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport 8089 -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport 8089 -j ACCEPT
+PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTP_HOST_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTP_HOST_PORT} -j ACCEPT
+PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTPS_HOST_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTPS_HOST_PORT} -j ACCEPT
+PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_HOST_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_HOST_PORT} -j ACCEPT
+PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT
 PostUp = iptables -C FORWARD -i ${WG_NIC} -j ACCEPT 2>/dev/null || iptables -I FORWARD -i ${WG_NIC} -j ACCEPT
 PostUp = iptables -C FORWARD -o ${WG_NIC} -j ACCEPT 2>/dev/null || iptables -I FORWARD -o ${WG_NIC} -j ACCEPT
 PostUp = iptables -t nat -C POSTROUTING -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o ${SERVER_NIC} -j MASQUERADE
 PostDown = iptables -D INPUT -p udp --dport ${WG_PORT} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${WGD_PORT} -j ACCEPT 2>/dev/null || true
-PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 8080 -j ACCEPT 2>/dev/null || true
-PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 8443 -j ACCEPT 2>/dev/null || true
-PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 58087 -j ACCEPT 2>/dev/null || true
-PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 8089 -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTP_HOST_PORT} -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_HTTPS_HOST_PORT} -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_HOST_PORT} -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -i ${WG_NIC} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -o ${WG_NIC} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || true
@@ -357,10 +361,10 @@ TAKLITE_PUBLIC_HOST=${TAKLITE_PUBLIC_HOST}
 TAKLITE_SERVER_HOST=${TAKLITE_BIND_IP}
 TAKLITE_ADMIN_TOKEN=${TAKLITE_ADMIN_TOKEN}
 TAKLITE_CERT_PASSWORD=${TAKLITE_CERT_PASSWORD}
-TAKLITE_COT_HOST_PORT=58087
-TAKLITE_COT_TLS_HOST_PORT=8089
-TAKLITE_HTTP_HOST_PORT=8080
-TAKLITE_HTTPS_HOST_PORT=8443
+TAKLITE_COT_HOST_PORT=${TAKLITE_COT_HOST_PORT}
+TAKLITE_COT_TLS_HOST_PORT=${TAKLITE_COT_TLS_HOST_PORT}
+TAKLITE_HTTP_HOST_PORT=${TAKLITE_HTTP_HOST_PORT}
+TAKLITE_HTTPS_HOST_PORT=${TAKLITE_HTTPS_HOST_PORT}
 TAKLITE_MAX_UPLOAD_BYTES=268435456
 TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=false
 TAKLITE_ALLOW_LEGACY_CLIENT_CERT=true
@@ -379,7 +383,7 @@ write_admin_notes() {
 TAKlite bootstrap token:
 ${TAKLITE_ADMIN_TOKEN}
 
-Use this token at http://${TAKLITE_BIND_IP}:8080/ after connecting WireGuard.
+Use this token at http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/ after connecting WireGuard.
 It creates the first TAKlite admin username/password.
 Keep this file root-only for recovery.
 EOF
@@ -399,8 +403,8 @@ From the admin computer:
 
 After importing and connecting WireGuard:
   WGDashboard: http://${WGD_BIND_IP}:${WGD_PORT}
-  TAKlite UI:  http://${TAKLITE_BIND_IP}:8080/
-  TAKlite HTTPS API: https://${TAKLITE_BIND_IP}:8443/Marti
+  TAKlite UI:  http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/
+  TAKlite HTTPS API: https://${TAKLITE_BIND_IP}:${TAKLITE_HTTPS_HOST_PORT}/Marti
 
 WGDashboard login:
   username: ${WGD_USER}
@@ -415,36 +419,36 @@ Root-only bootstrap token file:
 
 ATAK/WinTAK TCP connection:
   host: ${TAKLITE_BIND_IP}
-  port: 58087
+  port: ${TAKLITE_COT_HOST_PORT}
   protocol: TCP
   SSL/TLS: off
 
 ATAK/WinTAK SSL connection packages:
   create and download per-user .dp.zip packages in the TAKlite UI
-  TAKlite UI: http://${TAKLITE_BIND_IP}:8080/
+  TAKlite UI: http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/
   certificate password: ${TAKLITE_CERT_PASSWORD}
 
 Mission/datapackage HTTP base:
-  http://${TAKLITE_PUBLIC_HOST}:8080/Marti
+  http://${TAKLITE_PUBLIC_HOST}:${TAKLITE_HTTP_HOST_PORT}/Marti
 
 Mission/datapackage HTTPS base:
-  https://${TAKLITE_BIND_IP}:8443/Marti
+  https://${TAKLITE_BIND_IP}:${TAKLITE_HTTPS_HOST_PORT}/Marti
 
 ATAK HTTPS truststore:
-  URL from a VPN-connected phone: http://${TAKLITE_BIND_IP}:8080/certs/taklite-truststore.p12
+  URL from a VPN-connected phone: http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/certs/taklite-truststore.p12
   File on VPS: ${BASE_DIR}/taklite/certs/taklite-truststore.p12
   Password: ${TAKLITE_CERT_PASSWORD}
 
 Cloud firewall target after VPN is confirmed:
   allow ${WG_PORT}/udp publicly
   close or tightly restrict public SSH
-  do not expose 8080/tcp, 58087/tcp, or ${WGD_PORT}/tcp publicly
-  do not expose 8443/tcp publicly unless you intentionally want public TAK HTTPS API
+  do not expose ${TAKLITE_HTTP_HOST_PORT}/tcp, ${TAKLITE_COT_HOST_PORT}/tcp, or ${WGD_PORT}/tcp publicly
+  do not expose ${TAKLITE_HTTPS_HOST_PORT}/tcp publicly unless you intentionally want public TAK HTTPS API
 
 Local service checks on the VPS:
   wg show
   docker compose -f ${BASE_DIR}/docker-compose.yml ps
-  curl -sS -H 'X-Admin-Token: ${TAKLITE_ADMIN_TOKEN}' http://${TAKLITE_BIND_IP}:8080/api/health
+  curl -sS -H 'X-Admin-Token: ${TAKLITE_ADMIN_TOKEN}' http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/api/health
 EOF
   chmod 600 "${ADMIN_OUT_DIR}/README.txt"
 }
@@ -463,7 +467,7 @@ Admin WireGuard QR:
    ${ADMIN_OUT_DIR}/${ADMIN_NAME}-${WG_NIC}.png
 
 TAKlite URL after VPN connection:
-   http://${TAKLITE_BIND_IP}:8080/
+   http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/
 
 TAKlite one-time bootstrap token:
    ${TAKLITE_ADMIN_TOKEN}
@@ -484,13 +488,13 @@ A root-only copy was saved at:
    password: ${WGD_PASSWORD}
 
 4. Open TAKlite:
-   http://${TAKLITE_BIND_IP}:8080/
+   http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/
 
    one-time bootstrap token: ${TAKLITE_ADMIN_TOKEN}
    use it to create the first TAKlite admin username/password
 
 5. ATAK/WinTAK TCP:
-   ${TAKLITE_BIND_IP}:58087
+   ${TAKLITE_BIND_IP}:${TAKLITE_COT_HOST_PORT}
    protocol TCP, SSL/TLS off
 
 6. ATAK/WinTAK SSL connection packages:

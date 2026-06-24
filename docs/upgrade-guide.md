@@ -92,9 +92,9 @@ Or, if SSH is only available over VPN:
 scp TAKlite-vX.Y.Z.zip root@10.66.66.1:/root/
 ```
 
-## Stage The New Files
+## Run The Update Script
 
-On the VPS:
+On the VPS, from the currently installed TAKlite app directory:
 
 ```bash
 if [ -f /root/taklite/docker-compose.yml ]; then
@@ -106,51 +106,30 @@ else
   exit 1
 fi
 
-RELEASE_ZIP="/root/TAKlite-vX.Y.Z.zip"
-STAGE_DIR="/root/taklite-update-$(date -u +%Y%m%dT%H%M%SZ)"
-
-if ! command -v unzip >/dev/null 2>&1; then
-  apt-get update
-  apt-get install -y unzip
-fi
-
-mkdir -p "$STAGE_DIR"
-unzip -q "$RELEASE_ZIP" -d "$STAGE_DIR"
-
-SRC_DIR="$(find "$STAGE_DIR" -maxdepth 3 -name docker-compose.yml -exec dirname {} \; | head -n1)"
-if [ -z "$SRC_DIR" ]; then
-  echo "Could not find docker-compose.yml in release zip" >&2
-  exit 1
-fi
-
-echo "Staged release source: $SRC_DIR"
+cd "$APP_DIR"
+./update.sh /root/TAKlite-vX.Y.Z.zip
 ```
 
-## Apply The Upgrade
-
-Stop TAKlite, copy the new app files, preserve runtime state, rebuild, and restart:
+If the currently installed version does not have `update.sh`, extract the new release and run the updater from the staged copy:
 
 ```bash
-cd "$APP_DIR"
-docker compose down
+cd /root
+python3 - <<'PY'
+import pathlib, zipfile
+zip_path = pathlib.Path("/root/TAKlite-vX.Y.Z.zip")
+stage = pathlib.Path("/root/taklite-update-stage")
+stage.mkdir(exist_ok=True)
+with zipfile.ZipFile(zip_path) as z:
+    z.extractall(stage)
+print(next(stage.rglob("update.sh")))
+PY
 
-rsync -a --delete \
-  --exclude '.env' \
-  --exclude 'taklite/data/' \
-  --exclude 'taklite/certs/' \
-  --exclude 'taklite/packages/' \
-  "$SRC_DIR"/ "$APP_DIR"/
-
-chmod +x "$APP_DIR/install.sh" "$APP_DIR/smoke-test.sh"
-
-grep -q '^TAKLITE_MAX_UPLOAD_BYTES=' "$APP_DIR/.env" || printf '\nTAKLITE_MAX_UPLOAD_BYTES=268435456\n' >> "$APP_DIR/.env"
-grep -q '^TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=' "$APP_DIR/.env" || printf 'TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=false\n' >> "$APP_DIR/.env"
-grep -q '^TAKLITE_ALLOW_LEGACY_CLIENT_CERT=' "$APP_DIR/.env" || printf 'TAKLITE_ALLOW_LEGACY_CLIENT_CERT=true\n' >> "$APP_DIR/.env"
-
-docker compose up -d --build
+bash "$(find /root/taklite-update-stage -name update.sh | head -n1)" --release-zip /root/TAKlite-vX.Y.Z.zip --app-dir "$APP_DIR"
 ```
 
-The `rsync` command intentionally excludes `.env`, `taklite/data`, `taklite/certs`, and `taklite/packages`. Those directories contain the server identity and runtime data.
+The update script creates a backup, stops TAKlite, copies the new app files, preserves runtime state, rebuilds, restarts, and checks health.
+
+The script does not overwrite the existing `TAKLITE_CERT_PASSWORD` in `.env`. If an older server used a long certificate password and you want to switch to `atakatak`, edit `.env`, restart TAKlite, then reissue affected connection users or create new connection packages. Existing already-downloaded `.dp.zip` files keep the password they were created with.
 
 ## Verify The Upgrade
 
