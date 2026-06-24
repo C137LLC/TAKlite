@@ -250,9 +250,7 @@ log "Applying release files from ${SOURCE_DIR}"
 rsync -a --delete \
   --exclude '.git/' \
   --exclude '.env' \
-  --exclude 'taklite/data/' \
-  --exclude 'taklite/certs/' \
-  --exclude 'taklite/packages/' \
+  --exclude 'taklite/' \
   "${SOURCE_DIR}/" "${APP_DIR}/"
 
 chmod +x "${APP_DIR}/install.sh" "${APP_DIR}/smoke-test.sh" "${APP_DIR}/update.sh"

@@ -208,6 +208,16 @@ In the TAKlite UI:
 6. Click Create User.
 7. Use QR or Copy URL for that user.
 
+For bulk onboarding:
+
+1. Open Connection Users.
+2. Click Create Bulk Users.
+3. Enter a name prefix, such as `user`.
+4. Enter the number of users to create.
+5. Click Create Batch.
+6. TAKlite creates numbered users such as `user1`, `user2`, and `user3`, with matching `.dp.zip` packages.
+7. Copy or download the CSV shown after creation. Bulk-created users share the portal password `atakatak`.
+
 The portal URL is VPN-only:
 
 ```text

@@ -48,7 +48,7 @@ TAKlite is a VPN-first relay and datapackage service. The intended public VPS ex
 - Add VPN health panel: WireGuard interface state, peer count, latest handshakes, transfer totals, and endpoint IPs.
 - Add a direct WGDashboard button/link from the TAKlite admin dashboard.
 - Add inline warnings when TAKlite detects that its admin/API ports are reachable from a non-VPN interface.
-- Add bulk portal user creation from CSV.
+- Add CSV import for bulk portal users.
 - Add one-click admin diagnostics bundle.
 - Add UI copy buttons for scp/rsync retrieval commands after install.
 - Add an upgrade guide and release notes template.

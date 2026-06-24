@@ -185,6 +185,16 @@ Use this workflow for each ATAK/WinTAK device.
 6. The user appears in the Connection Users table.
 7. Use Download DP.zip, QR, or Copy URL.
 
+For bulk onboarding:
+
+1. Open Connection Users.
+2. Click Create Bulk Users.
+3. Enter a name prefix such as `user`.
+4. Enter the number of users to create.
+5. Click Create Batch.
+6. TAKlite creates users such as `user1`, `user2`, and `user3`, with matching `.dp.zip` packages.
+7. Copy or download the CSV shown after creation. Bulk-created portal users use `atakatak` as the shared portal password.
+
 Connection User actions:
 
 - Download DP.zip: admin downloads the user's ATAK/WinTAK cert bundle

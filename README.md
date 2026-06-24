@@ -15,6 +15,7 @@ It installs a VPN-first stack on a fresh Ubuntu VPS: WireGuard, WGDashboard, a T
 - Runs TAKlite over the VPN for TAK users, clients, and datapackages
 - Creates ATAK/WinTAK TLS connection packages
 - Provides user/password portal downloads with QR/link support
+- Supports bulk Connection User creation for faster onboarding
 - Relays PLI, chat, markers, drawings, polygons, and CoT traffic
 - Supports datapackage upload, search, download, receive, and delete
 - Generates fresh keys, tokens, passwords, CA, and certs on every install
@@ -81,7 +82,7 @@ Plain CoT:   10.66.66.1:58087
 4. Open WGDashboard and TAKlite over the VPN.
 5. Create the first TAKlite admin account with the bootstrap token.
 6. Use WGDashboard to create device VPN peers.
-7. Use TAKlite Connection Users to create ATAK/WinTAK `.dp.zip` bundles.
+7. Use TAKlite Connection Users to create ATAK/WinTAK `.dp.zip` bundles, either one at a time or with Create Bulk Users.
 8. Give users WireGuard QR plus TAKlite portal QR/link and password.
 9. Test PLI, chat, marker drops, and datapackages.
 

@@ -93,6 +93,22 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function downloadText(text, filename, type = 'text/plain') {
+  downloadBlob(new Blob([text], { type }), filename);
+}
+
+function csvCell(value) {
+  return `"${String(value ?? '').replaceAll('"', '""')}"`;
+}
+
+function bulkUsersCsv(items) {
+  const rows = [
+    ['username', 'password', 'portal_url', 'connection'],
+    ...items.map((item) => [item.username, item.password, item.portal_url || `${location.origin}${item.portal_path || '/connect/'}`, item.connect_string]),
+  ];
+  return rows.map((row) => row.map(csvCell).join(',')).join('\n');
+}
+
 function App() {
   const [session, setSession] = useState(() => localStorage.getItem(SESSION_KEY) || '');
   const [bootstrap, setBootstrap] = useState(null);
@@ -450,9 +466,15 @@ async function deletePackage(pkg, session, load, setStatus) {
 }
 
 function UsersPanel({ users, portalUrl, session, load, setStatus }) {
+  const [showBulk, setShowBulk] = useState(false);
   return (
     <Panel title="Connection Users" icon={Users} wide actions={<span className="hint">Portal: <code>{portalUrl}</code></span>}>
       <CreateUser session={session} load={load} setStatus={setStatus} />
+      <div className="panel-tools">
+        <button className="btn ghost" type="button" onClick={() => setShowBulk(!showBulk)}><Users size={16} />Create Bulk Users</button>
+        <span className="hint">Bulk users receive one shared portal password for the batch.</span>
+      </div>
+      {showBulk && <CreateBulkUsers session={session} load={load} setStatus={setStatus} />}
       <UsersTable users={users} portalUrl={portalUrl} session={session} load={load} setStatus={setStatus} />
     </Panel>
   );
@@ -475,6 +497,79 @@ function CreateUser({ session, load, setStatus }) {
       <label className="check"><input type="checkbox" checked={form.allow_redownload} onChange={(e) => setForm({ ...form, allow_redownload: e.target.checked })} /> Allow re-download</label>
       <button className="btn primary" type="submit"><UserPlus size={16} />Create User</button>
     </form>
+  );
+}
+
+function CreateBulkUsers({ session, load, setStatus }) {
+  const [form, setForm] = useState({ prefix: 'user', count: 20, description: '', allow_redownload: false });
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const body = await api('/api/portal-users/bulk-create', session, { method: 'POST', body: JSON.stringify(form) });
+      setResult(body);
+      setStatus(`Created ${body.count} bulk connection user(s). Save the shared password before leaving this page.`);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const items = result?.items || [];
+  const csv = items.length ? bulkUsersCsv(items) : '';
+  return (
+    <div className="bulk-panel">
+      <form className="create-grid bulk" onSubmit={submit}>
+        <label>Name prefix<input value={form.prefix} onChange={(e) => setForm({ ...form, prefix: e.target.value })} placeholder="user" /></label>
+        <label>Number<input type="number" min="1" max="100" value={form.count} onChange={(e) => setForm({ ...form, count: e.target.value })} /></label>
+        <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
+        <label className="check"><input type="checkbox" checked={form.allow_redownload} onChange={(e) => setForm({ ...form, allow_redownload: e.target.checked })} /> Allow re-download</label>
+        <button className="btn primary" type="submit" disabled={busy}><UserPlus size={16} />{busy ? 'Creating...' : 'Create Batch'}</button>
+      </form>
+      {items.length > 0 && (
+        <div className="bulk-result">
+          <div className="bulk-summary">
+            <div>
+              <span className="mini-label">Shared Password</span>
+              <code>{result.shared_password}</code>
+            </div>
+            <div className="row-actions">
+              <button className="btn ghost" type="button" onClick={() => copyText(result.shared_password, setStatus)}><Copy size={15} />Copy Password</button>
+              <button className="btn ghost" type="button" onClick={() => copyText(csv, setStatus)}><Copy size={15} />Copy CSV</button>
+              <button className="btn ghost" type="button" onClick={() => downloadText(csv, `${form.prefix || 'taklite'}-bulk-users.csv`, 'text/csv')}><Download size={15} />Download CSV</button>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Password</th>
+                  <th>Portal / Connection</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.id || item.username}>
+                    <td><strong>{item.username}</strong></td>
+                    <td><code>{item.password}</code></td>
+                    <td><code>{item.portal_url}</code><br /><code>{item.connect_string}</code></td>
+                    <td>
+                      <div className="row-actions">
+                        <button className="icon-btn" title="Download DP.zip" onClick={() => downloadProfile(item.cert_profile_id, session)}><Download size={15} /></button>
+                        <button className="icon-btn" title="Copy portal URL" onClick={() => copyText(item.portal_url, setStatus)}><Copy size={15} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

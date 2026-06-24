@@ -44,7 +44,7 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.5"
+VERSION = "TAKlite 0.2.6"
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
@@ -54,6 +54,7 @@ COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CER
 ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
 LOGIN_LIMIT_ATTEMPTS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_ATTEMPTS", "8"))
 LOGIN_LIMIT_WINDOW_SECONDS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_WINDOW_SECONDS", "300"))
+MAX_BULK_USERS = int(os.environ.get("TAKLITE_MAX_BULK_USERS", "100"))
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
@@ -62,6 +63,8 @@ CALLSIGN_RE = re.compile(rb'<contact\b[^>]*\bcallsign="([^"]+)"')
 EVENT_SAVE_COUNT = 0
 LOGIN_FAILURES = {}
 LOGIN_LOCK = threading.Lock()
+BULK_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+BULK_PORTAL_PASSWORD = "atakatak"
 
 
 def utc_now():
@@ -440,6 +443,64 @@ def validate_portal_username(username):
     if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,64}", username):
         raise ValueError("portal username must be 3-64 characters: letters, numbers, dot, underscore, dash, or @")
     return username
+
+
+def build_bulk_usernames(prefix, count):
+    prefix = (prefix or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,56}", prefix):
+        raise ValueError("bulk username prefix must use letters, numbers, dot, underscore, dash, or @")
+    try:
+        count = int(count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"bulk user count must be between 1 and {MAX_BULK_USERS}") from exc
+    if count < 1 or count > MAX_BULK_USERS:
+        raise ValueError(f"bulk user count must be between 1 and {MAX_BULK_USERS}")
+    usernames = [validate_portal_username(f"{prefix}{idx}") for idx in range(1, count + 1)]
+    if len(set(usernames)) != len(usernames):
+        raise ValueError("bulk username prefix produced duplicate users")
+    return usernames
+
+
+def generate_portal_password(length=12):
+    return "".join(secrets.choice(BULK_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def ensure_bulk_users_available(usernames):
+    if not usernames:
+        raise ValueError("no users requested")
+    placeholders = ",".join("?" for _ in usernames)
+    with db_connect() as conn:
+        users = conn.execute(f"select username from portal_users where username in ({placeholders})", usernames).fetchall()
+        profiles = conn.execute(f"select name from cert_profiles where name in ({placeholders})", usernames).fetchall()
+    conflicts = sorted({row[0] for row in users} | {row[0] for row in profiles})
+    if conflicts:
+        preview = ", ".join(conflicts[:8])
+        suffix = "..." if len(conflicts) > 8 else ""
+        raise ValueError(f"bulk user/profile already exists: {preview}{suffix}")
+
+
+def create_bulk_portal_users(prefix, count, description="", allow_redownload=False, base_url=""):
+    usernames = build_bulk_usernames(prefix, count)
+    ensure_bulk_users_available(usernames)
+    shared_password = BULK_PORTAL_PASSWORD
+    items = []
+    note = (description or "").strip()
+    for username in usernames:
+        user = create_portal_user(
+            username,
+            shared_password,
+            username,
+            note or f"Bulk user {username}",
+            allow_redownload,
+        )
+        portal_path = user.get("portal_path") or "/connect/"
+        items.append({
+            **user,
+            "password": shared_password,
+            "portal_url": f"{base_url}{portal_path}" if base_url else portal_path,
+            "download_url": f"/api/cert-profiles/download?id={user['cert_profile_id']}",
+        })
+    return {"ok": True, "count": len(items), "shared_password": shared_password, "items": items}
 
 
 def unique_profile_name(base):
@@ -1570,6 +1631,18 @@ class HttpHandler(BaseHTTPRequestHandler):
                     payload.get("display_name", ""),
                     payload.get("description", ""),
                     bool(payload.get("allow_redownload", False)),
+                ))
+                return
+            if path == "/api/portal-users/bulk-create":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(create_bulk_portal_users(
+                    payload.get("prefix", ""),
+                    payload.get("count", 0),
+                    payload.get("description", ""),
+                    bool(payload.get("allow_redownload", False)),
+                    absolute_base_url(self),
                 ))
                 return
             if path == "/api/portal-users/reset-password":
