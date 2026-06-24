@@ -93,6 +93,88 @@ scp root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
 rsync -av root@YOUR_VPS_PUBLIC_IP:/root/taklite-admin/admin-wg0.conf .
 ```
 
+## Updating An Existing Server
+
+Do not rerun `install.sh` for normal updates. Use `update.sh` so the server keeps its existing WireGuard peers, TAKlite users, certs, datapackages, and `.env`.
+
+The `.env` file is preserved during updates. That means custom network settings and ports remain in place, including any changed TAKlite HTTP/HTTPS/CoT ports, WireGuard bind IP, and WGDashboard URL.
+
+Copy/paste update command for the VPS:
+
+```bash
+set -Eeuo pipefail
+
+if ! command -v git >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y git
+fi
+
+if [ -f /root/taklite/docker-compose.yml ]; then
+  APP_DIR=/root/taklite
+elif [ -f /root/TAKlite/docker-compose.yml ]; then
+  APP_DIR=/root/TAKlite
+elif [ -f /root/taklite-vps-bundle/docker-compose.yml ]; then
+  APP_DIR=/root/taklite-vps-bundle
+else
+  echo "Could not find TAKlite app directory" >&2
+  exit 1
+fi
+
+STAGE=/root/TAKlite-update
+rm -rf "$STAGE"
+git clone --depth 1 https://github.com/C137LLC/TAKlite.git "$STAGE"
+
+bash "$STAGE/update.sh" --from-dir "$STAGE" --app-dir "$APP_DIR"
+```
+
+That command stages the latest GitHub version, updates the live TAKlite app, and preserves the live `.env`, certs, database, datapackages, generated packages, WireGuard config, and custom port settings.
+
+Release zip workflow:
+
+```bash
+scp TAKlite-vX.Y.Z.zip root@10.66.66.1:/root/
+
+ssh root@10.66.66.1
+
+if [ -f /root/taklite/docker-compose.yml ]; then
+  APP_DIR=/root/taklite
+elif [ -f /root/TAKlite/docker-compose.yml ]; then
+  APP_DIR=/root/TAKlite
+elif [ -f /root/taklite-vps-bundle/docker-compose.yml ]; then
+  APP_DIR=/root/taklite-vps-bundle
+else
+  echo "Could not find TAKlite app directory" >&2
+  exit 1
+fi
+
+bash "$APP_DIR/update.sh" /root/TAKlite-vX.Y.Z.zip
+```
+
+Git clone workflow:
+
+```bash
+ssh root@10.66.66.1
+cd /root
+rm -rf /root/TAKlite-update
+git clone https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/update.sh --from-dir /root/TAKlite-update
+```
+
+For a specific version tag:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --branch vX.Y.Z --depth 1 \
+  https://github.com/C137LLC/TAKlite.git \
+  /root/TAKlite-update
+
+bash /root/TAKlite-update/update.sh --from-dir /root/TAKlite-update
+```
+
+Never clone directly over the live TAKlite app directory. Clone into a staging directory such as `/root/TAKlite-update`, then run the staged `update.sh --from-dir`.
+
 ## Security Notes
 
 Every clean install generates new:

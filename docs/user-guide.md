@@ -292,6 +292,58 @@ The dashboard shows:
 
 TLS clients should show a certificate common name matching the created Connection User or package name.
 
+## Updating TAKlite
+
+Use `update.sh` for normal upgrades. Do not rerun `install.sh` on an existing server unless you are intentionally creating a fresh deployment with new WireGuard and TAKlite credentials.
+
+Updates preserve the live `.env`, so custom ports and network settings stay in place. This includes TAKlite HTTP/HTTPS/CoT ports, WireGuard settings, and the WGDashboard URL.
+
+Release zip workflow:
+
+```bash
+scp TAKlite-vX.Y.Z.zip root@10.66.66.1:/root/
+
+ssh root@10.66.66.1
+
+if [ -f /root/taklite/docker-compose.yml ]; then
+  APP_DIR=/root/taklite
+elif [ -f /root/TAKlite/docker-compose.yml ]; then
+  APP_DIR=/root/TAKlite
+elif [ -f /root/taklite-vps-bundle/docker-compose.yml ]; then
+  APP_DIR=/root/taklite-vps-bundle
+else
+  echo "Could not find TAKlite app directory" >&2
+  exit 1
+fi
+
+bash "$APP_DIR/update.sh" /root/TAKlite-vX.Y.Z.zip
+```
+
+Git clone workflow:
+
+```bash
+ssh root@10.66.66.1
+cd /root
+rm -rf /root/TAKlite-update
+git clone https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/update.sh --from-dir /root/TAKlite-update
+```
+
+For a specific release tag:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --branch vX.Y.Z --depth 1 \
+  https://github.com/C137LLC/TAKlite.git \
+  /root/TAKlite-update
+
+bash /root/TAKlite-update/update.sh --from-dir /root/TAKlite-update
+```
+
+Never `git clone` directly over the live TAKlite app directory. Clone into a staging directory and let the staged `update.sh` copy application files while preserving `.env`, certs, database, datapackages, and packages.
+
 ## Troubleshooting
 
 Watch logs:
