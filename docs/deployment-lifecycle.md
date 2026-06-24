@@ -4,6 +4,7 @@ This guide separates two admin tasks that must not be mixed:
 
 - New deployment or cloned snapshot rekey: create fresh WireGuard, WGDashboard, TAKlite admin, CA, server cert, and ATAK/WinTAK user certs.
 - Existing deployment update: replace TAKlite application files while preserving VPN peers, TAKlite certs, datapackages, SQLite data, and generated connection packages.
+- Uninstall or reinstall: intentionally wipe TAKlite, WireGuard, WGDashboard, certs, users, datapackages, and generated packages.
 
 ## Recommended Snapshot Strategy
 
@@ -22,6 +23,34 @@ For every new VPS created from that base snapshot:
 7. Create new WireGuard peers and TAKlite connection users.
 
 This produces new VPN keys, admin credentials, TAKlite CA, server certs, and ATAK/WinTAK client certs for every VPS.
+
+## Uninstall And Reinstall
+
+Use uninstall or reinstall when the admin intentionally wants to destroy the current TAKlite deployment.
+
+Warning: these commands stop WireGuard. If the admin is connected over the WireGuard tunnel, the SSH session can disconnect before the command finishes. Confirm public SSH/22 is open from a reachable network, or use VPS console access.
+
+Uninstall only:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --depth 1 https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/uninstall.sh --yes
+```
+
+Reinstall with fresh identity:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --depth 1 https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/reinstall.sh --yes
+```
+
+Reinstall creates new WireGuard keys, WGDashboard credentials, TAKlite bootstrap token, TAKlite CA, server certs, and user cert packages.
 
 ## Snapshot Already Contains TAKlite
 

@@ -175,6 +175,32 @@ bash /root/TAKlite-update/update.sh --from-dir /root/TAKlite-update
 
 Never clone directly over the live TAKlite app directory. Clone into a staging directory such as `/root/TAKlite-update`, then run the staged `update.sh --from-dir`.
 
+## Uninstall Or Reinstall
+
+Use these only when you intentionally want to wipe the TAKlite deployment. Normal upgrades should use `update.sh`.
+
+Warning: uninstall and reinstall stop WireGuard. If you are SSH'd into the VPS through the WireGuard tunnel, your shell can disconnect before the command finishes. Make sure public SSH/22 is open from a network you can reach, or have VPS console access ready before running these.
+
+Uninstall wipes TAKlite, WGDashboard, WireGuard config, admin recovery files, certs, users, datapackages, generated packages, and TAKlite backups:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --depth 1 https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/uninstall.sh --yes
+```
+
+Reinstall wipes the current deployment, recreates the app directory, and runs a fresh install with new WireGuard and TAKlite identity:
+
+```bash
+cd /root
+rm -rf /root/TAKlite-update
+git clone --depth 1 https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+bash /root/TAKlite-update/reinstall.sh --yes
+```
+
 ## Security Notes
 
 Every clean install generates new:
