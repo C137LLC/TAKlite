@@ -28,7 +28,7 @@ VPN-only:
 - `22/tcp` SSH
 - `10086/tcp` WGDashboard
 - `8080/tcp` TAKlite admin UI, client portal, and HTTP datapackage API
-- `8443/tcp` TAKlite HTTPS datapackage API, or the custom install port such as `18443/tcp` when co-hosted with Zello
+- `8443/tcp` TAKlite HTTPS datapackage API
 - `58087/tcp` plain CoT TCP
 - `8089/tcp` TLS CoT TCP
 
@@ -107,7 +107,7 @@ Plain CoT: 10.66.66.1:58087
 Certificate password: atakatak unless changed during install; saved in `/root/taklite-admin/README.txt`
 ```
 
-If the VPS is co-hosted with Zello On-Prem, TAKlite HTTPS/Marti may be installed on `18443` instead of `8443`. In that case ATAK/WinTAK secure server or datapackage settings should use port `18443`.
+If TAKlite HTTPS/Marti was installed on a custom port, ATAK/WinTAK secure server or datapackage settings should use that custom port.
 
 ## Save Install Output
 
@@ -310,7 +310,7 @@ Common issues:
 - Portal login invalid: confirm the user was created under Connection Users, not Connection Packages.
 - Invalid truststore: create a fresh Connection User after deploy and import the newest `.dp.zip`.
 - Red TAK connection: confirm VPN is connected, use `10.66.66.1:8089:ssl`, and watch logs for `cert_cn=...`.
-- Datapackage send fails: confirm the TAK client has the server connection from the `.dp.zip` and can reach `10.66.66.1:8080` plus the configured HTTPS/Marti port, usually `8443` or `18443` when co-hosted with Zello.
+- Datapackage send fails: confirm the TAK client has the server connection from the `.dp.zip` and can reach `10.66.66.1:8080` plus the configured HTTPS/Marti port, usually `8443`.
 
 ## Smoke Test
 

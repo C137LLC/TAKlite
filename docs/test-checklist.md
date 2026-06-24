@@ -48,7 +48,7 @@
 - Public `51820/udp` is open
 - Public `22/tcp` is closed or restricted after setup
 - Public `8080/tcp` is closed
-- Public `8443/tcp`, or custom TAKlite HTTPS/Marti port such as `18443/tcp`, is closed
+- Public `8443/tcp`, or the custom TAKlite HTTPS/Marti port selected during install, is closed
 - Public `58087/tcp` is closed
 - Public `8089/tcp` is closed
 - Public `10086/tcp` is closed

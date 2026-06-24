@@ -55,8 +55,6 @@ chmod +x install.sh smoke-test.sh
 
 The installer prompts for environment-specific values and prints the admin WireGuard profile, WGDashboard login, TAKlite bootstrap token, and certificate password at completion. The ATAK/WinTAK certificate password defaults to `atakatak` unless you change it during install.
 
-If this VPS is also running Zello On-Prem, leave Zello on `8443` and set TAKlite HTTPS/Marti host port to `18443` during install.
-
 Root-only recovery notes are saved on the VPS:
 
 ```text

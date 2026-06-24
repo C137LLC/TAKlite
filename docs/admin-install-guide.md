@@ -78,7 +78,7 @@ chmod +x install.sh smoke-test.sh
 ./install.sh
 ```
 
-Use defaults unless your VPS environment requires different values. If Zello On-Prem is on the same VPS, keep Zello on `8443` and set TAKlite HTTPS/Marti host port to `18443` during the TAKlite prompts.
+Use defaults unless your VPS environment requires different values.
 
 Important defaults:
 
@@ -94,13 +94,6 @@ TLS CoT TCP: 10.66.66.1:8089
 Datapackage HTTP: http://10.66.66.1:8080/Marti
 Datapackage HTTPS: https://10.66.66.1:8443/Marti
 Certificate password: atakatak unless changed during install; printed in `/root/taklite-admin/README.txt`
-```
-
-Zello co-hosted default:
-
-```text
-Datapackage HTTPS: https://10.66.66.1:18443/Marti
-ATAK secure server / datapackage port: 18443
 ```
 
 ## Save The Bootstrap Output
@@ -378,7 +371,7 @@ Expected VPN-only services:
 22/tcp      SSH over VPN
 10086/tcp   WGDashboard
 8080/tcp    TAKlite UI and HTTP datapackage API
-8443/tcp    TAKlite HTTPS datapackage API, or 18443/tcp when co-hosted with Zello
+8443/tcp    TAKlite HTTPS datapackage API
 58087/tcp   plain CoT TCP
 8089/tcp   TLS CoT TCP
 ```

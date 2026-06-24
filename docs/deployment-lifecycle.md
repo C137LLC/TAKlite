@@ -9,7 +9,7 @@ This guide separates two admin tasks that must not be mixed:
 
 Best option: snapshot the VPS before running `install.sh`.
 
-That gives you a clean base image with Ubuntu, Docker, Zello, firewall preferences, and any common tools, but without reused TAKlite/WireGuard identity.
+That gives you a clean base image with Ubuntu, Docker, firewall preferences, any other required services, and common tools, but without reused TAKlite/WireGuard identity.
 
 For every new VPS created from that base snapshot:
 
@@ -33,7 +33,7 @@ Create a new base snapshot from a VPS that has only:
 
 - Ubuntu
 - Docker
-- Zello On-Prem, if desired
+- other required services, if desired
 - Firewall baseline
 - no `/etc/wireguard/wg0.conf`
 - no `/root/taklite-admin`
@@ -47,7 +47,7 @@ This is the safest and cleanest repeatable deployment path.
 
 Use this only when you intentionally want the cloned VPS to become a new independent deployment.
 
-This removes TAKlite and WireGuard identity, but does not touch a sibling Zello install in `/root/docker`.
+This removes TAKlite and WireGuard identity, but does not touch unrelated sibling services.
 
 ```bash
 systemctl stop wg-dashboard 2>/dev/null || true
@@ -78,27 +78,11 @@ cd /root/taklite
 
 If your app directory is `/root/TAKlite` or `/root/taklite-vps-bundle`, replace `/root/taklite` in the commands above.
 
-## Zello Co-Hosted VPS
+## Custom Ports
 
-Zello On-Prem commonly needs `8443/tcp`. TAKlite can run next to it cleanly.
+The normal TAKlite HTTPS/Marti port is `8443`. During install, the admin can change TAKlite host ports if the VPS environment requires it.
 
-During TAKlite install, use:
-
-```text
-TAKlite HTTP/admin host port: 8080
-TAKlite HTTPS/Marti host port: 18443
-TAKlite plain CoT TCP host port: 58087
-TAKlite TLS CoT TCP host port: 8089
-```
-
-After this, ATAK/WinTAK should use:
-
-```text
-TLS CoT: 10.66.66.1:8089:ssl
-Secure server / datapackage port: 18443
-```
-
-Only WireGuard UDP should be public. Keep TAKlite, WGDashboard, SSH-over-VPN, and Zello admin access behind the tunnel unless you intentionally expose something.
+Only WireGuard UDP should be public. Keep TAKlite, WGDashboard, SSH-over-VPN, and any other admin surfaces behind the tunnel unless you intentionally expose something.
 
 ## Existing Server Update
 
