@@ -34,7 +34,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -239,7 +240,7 @@ nav {
 
 .stat-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -277,6 +278,58 @@ nav {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.health-grid.wide {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.health-metric {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.health-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.health-metric strong {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+
+.health-metric.good strong {
+  color: var(--accent-2);
+}
+
+.health-metric.warn strong {
+  color: var(--amber);
+}
+
+.health-metric.bad strong,
+.error-box {
+  color: #ffd2ce;
+}
+
+.error-box {
+  padding: 14px 16px;
+  background: var(--red-bg);
 }
 
 .panel {
@@ -465,7 +518,8 @@ label {
   font-weight: 800;
 }
 
-input {
+input,
+select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -476,9 +530,14 @@ input {
   outline: none;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: rgba(100, 193, 140, 0.75);
   box-shadow: 0 0 0 3px rgba(100, 193, 140, 0.12);
+}
+
+select {
+  appearance: none;
 }
 
 .check {
@@ -491,6 +550,94 @@ input:focus {
 .check input {
   width: auto;
   min-height: auto;
+}
+
+.access-create {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.access-create.group-create {
+  grid-template-columns: minmax(160px, 220px) 1fr minmax(80px, 110px) auto;
+  align-items: end;
+}
+
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.check-row.compact {
+  gap: 5px 10px;
+}
+
+.access-table {
+  min-width: 680px;
+}
+
+.color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+
+.bulk-access {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.bulk-access-grid {
+  display: grid;
+  grid-template-columns: 1fr minmax(180px, 240px) minmax(150px, 190px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.group-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.create-grid > .group-picks {
+  grid-column: 1 / -1;
+  padding: 0;
+}
+
+.group-picks.compact {
+  align-self: end;
+}
+
+.group-chip {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+}
+
+.matched-users {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.link-matrix {
+  min-width: 880px;
+}
+
+.link-checks {
+  display: grid;
+  gap: 4px;
 }
 
 .empty-state {
@@ -574,7 +721,7 @@ input:focus {
   }
 
   nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     margin-top: 14px;
   }
 
@@ -598,9 +745,16 @@ input:focus {
     grid-template-columns: 1fr;
   }
 
+  .health-grid,
+  .health-grid.wide {
+    grid-template-columns: 1fr;
+  }
+
   .create-grid,
   .create-grid.compact,
-  .create-grid.bulk {
+  .create-grid.bulk,
+  .access-create.group-create,
+  .bulk-access-grid {
     grid-template-columns: 1fr;
   }
 

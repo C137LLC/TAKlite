@@ -148,6 +148,8 @@ merge_env_defaults() {
   append_env_default "${env_file}" "TAKLITE_MAX_UPLOAD_BYTES" "268435456"
   append_env_default "${env_file}" "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT" "false"
   append_env_default "${env_file}" "TAKLITE_ALLOW_LEGACY_CLIENT_CERT" "true"
+  append_env_default "${env_file}" "TAKLITE_ACCESS_CONTROL_ENFORCE" "false"
+  append_env_default "${env_file}" "TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS" "2.5"
 }
 
 health_check() {
@@ -258,6 +260,7 @@ rsync -a --delete \
 
 chmod +x "${APP_DIR}/install.sh" "${APP_DIR}/smoke-test.sh" "${APP_DIR}/update.sh"
 install -d -m 700 "${APP_DIR}/taklite/data" "${APP_DIR}/taklite/certs" "${APP_DIR}/taklite/packages"
+chown -R 10001:10001 "${APP_DIR}/taklite/data" "${APP_DIR}/taklite/certs" "${APP_DIR}/taklite/packages"
 merge_env_defaults "${APP_DIR}/.env"
 
 log "Rebuilding and starting TAKlite"

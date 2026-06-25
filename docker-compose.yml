@@ -5,6 +5,7 @@ services:
       dockerfile: ./docker/taklite/Dockerfile
     container_name: taklite
     restart: unless-stopped
+    user: "10001:10001"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -36,6 +37,8 @@ services:
       TAKLITE_MAX_UPLOAD_BYTES: "${TAKLITE_MAX_UPLOAD_BYTES:-268435456}"
       TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT: "${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT:-false}"
       TAKLITE_ALLOW_LEGACY_CLIENT_CERT: "${TAKLITE_ALLOW_LEGACY_CLIENT_CERT:-true}"
+      TAKLITE_ACCESS_CONTROL_ENFORCE: "${TAKLITE_ACCESS_CONTROL_ENFORCE:-false}"
+      TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS: "${TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS:-2.5}"
     volumes:
       - ./taklite/data:/data
       - ./taklite/packages:/packages

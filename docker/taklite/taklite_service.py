@@ -44,7 +44,7 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.8"
+VERSION = "TAKlite 0.2.11"
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
@@ -52,9 +52,11 @@ COT_MAX_BUFFER_BYTES = int(os.environ.get("TAKLITE_COT_MAX_BUFFER_BYTES", str(10
 EVENT_RETENTION_ROWS = int(os.environ.get("TAKLITE_EVENT_RETENTION_ROWS", "50000"))
 COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "false").lower() in ("1", "true", "yes", "on")
 ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
+ACCESS_CONTROL_ENFORCE = os.environ.get("TAKLITE_ACCESS_CONTROL_ENFORCE", "false").lower() in ("1", "true", "yes", "on")
 LOGIN_LIMIT_ATTEMPTS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_ATTEMPTS", "8"))
 LOGIN_LIMIT_WINDOW_SECONDS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_WINDOW_SECONDS", "300"))
 MAX_BULK_USERS = int(os.environ.get("TAKLITE_MAX_BULK_USERS", "100"))
+SOCKET_SEND_TIMEOUT_SECONDS = float(os.environ.get("TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS", "2.5"))
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
@@ -76,9 +78,20 @@ def ensure_dirs():
     PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def db_connect():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn = sqlite3.connect(DB_PATH, timeout=15, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
+    conn.execute("pragma foreign_keys = on")
+    conn.execute("pragma journal_mode = wal")
+    conn.execute("pragma synchronous = normal")
     return conn
 
 
@@ -158,6 +171,47 @@ def init_db():
             )
         """)
         conn.execute("""
+            create table if not exists access_roles (
+                id integer primary key autoincrement,
+                name text not null unique,
+                description text,
+                can_see_all integer not null default 0,
+                can_send_all integer not null default 0,
+                can_see_own_groups integer not null default 1,
+                can_send_own_groups integer not null default 1,
+                created_at text not null
+            )
+        """)
+        conn.execute("""
+            create table if not exists access_groups (
+                id integer primary key autoincrement,
+                name text not null unique,
+                description text,
+                color text,
+                created_at text not null
+            )
+        """)
+        conn.execute("""
+            create table if not exists access_user_groups (
+                user_id integer not null,
+                group_id integer not null,
+                primary key(user_id, group_id),
+                foreign key(user_id) references portal_users(id) on delete cascade,
+                foreign key(group_id) references access_groups(id) on delete cascade
+            )
+        """)
+        conn.execute("""
+            create table if not exists access_policy_links (
+                source_group_id integer not null,
+                target_group_id integer not null,
+                can_see integer not null default 0,
+                can_send integer not null default 0,
+                primary key(source_group_id, target_group_id),
+                foreign key(source_group_id) references access_groups(id) on delete cascade,
+                foreign key(target_group_id) references access_groups(id) on delete cascade
+            )
+        """)
+        conn.execute("""
             create table if not exists portal_sessions (
                 token text primary key,
                 user_id integer not null,
@@ -171,6 +225,20 @@ def init_db():
             conn.execute("alter table cert_profiles add column download_token text")
         for row in conn.execute("select id from cert_profiles where download_token is null or download_token = ''").fetchall():
             conn.execute("update cert_profiles set download_token = ? where id = ?", (secrets.token_urlsafe(18), row["id"]))
+        portal_columns = {row["name"] for row in conn.execute("pragma table_info(portal_users)").fetchall()}
+        if "role_id" not in portal_columns:
+            conn.execute("alter table portal_users add column role_id integer")
+        package_columns = {row["name"] for row in conn.execute("pragma table_info(datapackages)").fetchall()}
+        if "CreatorUserId" not in package_columns:
+            conn.execute("alter table datapackages add column CreatorUserId integer")
+        if "Visibility" not in package_columns:
+            conn.execute("alter table datapackages add column Visibility text not null default 'private'")
+        conn.execute("create index if not exists idx_events_uid on events(uid)")
+        conn.execute("create index if not exists idx_events_received_at on events(received_at)")
+        conn.execute("create index if not exists idx_datapackages_hash on datapackages(Hash)")
+        conn.execute("create index if not exists idx_portal_users_profile on portal_users(cert_profile_id)")
+        conn.execute("create index if not exists idx_access_user_groups_user on access_user_groups(user_id)")
+        conn.execute("create index if not exists idx_access_user_groups_group on access_user_groups(group_id)")
         conn.commit()
 
 
@@ -199,15 +267,22 @@ def row_to_package(row):
         "MIMEType": row["MIMEType"] or "application/x-zip-compressed",
         "Size": row["Size"],
         "Tool": row["Tool"] or "public",
+        "CreatorUserId": row["CreatorUserId"] if "CreatorUserId" in row.keys() else None,
+        "Visibility": row["Visibility"] if "Visibility" in row.keys() else "private",
     }
 
 
-def list_packages():
+def list_packages(user_id=None, enforce=None):
     with db_connect() as conn:
         rows = conn.execute(
             "select * from datapackages order by PrimaryKey desc"
         ).fetchall()
-    return [row_to_package(row) for row in rows]
+    packages = [row_to_package(row) for row in rows]
+    if enforce is None:
+        enforce = ACCESS_CONTROL_ENFORCE
+    if not enforce:
+        return packages
+    return [package for package in packages if package_visible_to_user(package, user_id, enforce=True)]
 
 
 def find_package(hash_value):
@@ -217,7 +292,7 @@ def find_package(hash_value):
         ).fetchone()
 
 
-def upsert_package(hash_value, filename, creator_uid, data, host_url):
+def upsert_package(hash_value, filename, creator_uid, data, host_url, creator_user_id=None, visibility="private"):
     actual_hash = hashlib.sha256(data).hexdigest()
     hash_value = hash_value or actual_hash
     filename = filename or f"{hash_value}.dp.zip"
@@ -233,8 +308,8 @@ def upsert_package(hash_value, filename, creator_uid, data, host_url):
             uid = existing["UID"]
         conn.execute("""
             insert into datapackages
-                (UID, Name, Hash, SubmissionDateTime, SubmissionUser, CreatorUid, Keywords, MIMEType, Size, Path, Tool)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce((select Tool from datapackages where Hash = ?), 'public'))
+                (UID, Name, Hash, SubmissionDateTime, SubmissionUser, CreatorUid, Keywords, MIMEType, Size, Path, Tool, CreatorUserId, Visibility)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce((select Tool from datapackages where Hash = ?), ?), ?, ?)
             on conflict(Hash) do update set
                 Name=excluded.Name,
                 SubmissionDateTime=excluded.SubmissionDateTime,
@@ -242,10 +317,12 @@ def upsert_package(hash_value, filename, creator_uid, data, host_url):
                 Keywords=excluded.Keywords,
                 MIMEType=excluded.MIMEType,
                 Size=excluded.Size,
-                Path=excluded.Path
+                Path=excluded.Path,
+                CreatorUserId=coalesce(excluded.CreatorUserId, CreatorUserId),
+                Visibility=excluded.Visibility
         """, (
             uid, filename, hash_value, now, creator_uid or "", creator_uid or "",
-            "missionpackage", "application/x-zip-compressed", len(data), str(path), hash_value,
+            "missionpackage", "application/x-zip-compressed", len(data), str(path), hash_value, visibility or "private", creator_user_id, visibility or "private",
         ))
         conn.commit()
     return f"{host_url}/Marti/sync/content?hash={quote(hash_value)}"
@@ -281,7 +358,7 @@ def prune_events_if_needed(conn):
     """, (EVENT_RETENTION_ROWS,))
 
 
-def save_event(data, remote):
+def save_event(data, remote, user_id=None):
     uid = decode_match(UID_RE.search(data))
     callsign = decode_match(CALLSIGN_RE.search(data))
     try:
@@ -298,7 +375,7 @@ def save_event(data, remote):
     if uid or callsign:
         RELAY.update_client(remote, uid, callsign)
     if uid:
-        RELAY.remember_event(uid, data)
+        RELAY.remember_event(uid, data, user_id)
 
 
 def decode_match(match):
@@ -445,6 +522,327 @@ def validate_portal_username(username):
     return username
 
 
+def validate_access_name(name, label="name"):
+    name = (name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@() -]{0,63}", name):
+        raise ValueError(f"{label} must be 1-64 characters and start with a letter or number")
+    return name
+
+
+def row_to_role(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "can_see_all": bool(row["can_see_all"]),
+        "can_send_all": bool(row["can_send_all"]),
+        "can_see_own_groups": bool(row["can_see_own_groups"]),
+        "can_send_own_groups": bool(row["can_send_own_groups"]),
+        "created_at": row["created_at"],
+    }
+
+
+def row_to_group(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "color": row["color"] or "",
+        "created_at": row["created_at"],
+    }
+
+
+def row_to_policy_link(row):
+    return {
+        "source_group_id": row["source_group_id"],
+        "target_group_id": row["target_group_id"],
+        "can_see": bool(row["can_see"]),
+        "can_send": bool(row["can_send"]),
+    }
+
+
+def create_access_role(name, description="", can_see_all=False, can_send_all=False, can_see_own_groups=True, can_send_own_groups=True):
+    name = validate_access_name(name, "role name")
+    with db_connect() as conn:
+        conn.execute("""
+            insert into access_roles
+              (name, description, can_see_all, can_send_all, can_see_own_groups, can_send_own_groups, created_at)
+            values (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name,
+            (description or "").strip(),
+            1 if can_see_all else 0,
+            1 if can_send_all else 0,
+            1 if can_see_own_groups else 0,
+            1 if can_send_own_groups else 0,
+            utc_now(),
+        ))
+        conn.commit()
+        row = conn.execute("select * from access_roles where name = ?", (name,)).fetchone()
+    return row_to_role(row)
+
+
+def update_access_role(role_id, name, description="", can_see_all=False, can_send_all=False, can_see_own_groups=True, can_send_own_groups=True):
+    name = validate_access_name(name, "role name")
+    with db_connect() as conn:
+        conn.execute("""
+            update access_roles
+            set name = ?, description = ?, can_see_all = ?, can_send_all = ?, can_see_own_groups = ?, can_send_own_groups = ?
+            where id = ?
+        """, (
+            name,
+            (description or "").strip(),
+            1 if can_see_all else 0,
+            1 if can_send_all else 0,
+            1 if can_see_own_groups else 0,
+            1 if can_send_own_groups else 0,
+            role_id,
+        ))
+        conn.commit()
+        row = conn.execute("select * from access_roles where id = ?", (role_id,)).fetchone()
+    if not row:
+        raise ValueError("role not found")
+    return row_to_role(row)
+
+
+def delete_access_role(role_id):
+    with db_connect() as conn:
+        conn.execute("update portal_users set role_id = null where role_id = ?", (role_id,))
+        deleted = conn.execute("delete from access_roles where id = ?", (role_id,)).rowcount
+        conn.commit()
+    return {"deleted_rows": deleted}
+
+
+def create_access_group(name, description="", color=""):
+    name = validate_access_name(name, "group name")
+    color = (color or "").strip()
+    if color and not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        raise ValueError("group color must be a hex color like #64c18c")
+    with db_connect() as conn:
+        conn.execute("""
+            insert into access_groups (name, description, color, created_at)
+            values (?, ?, ?, ?)
+        """, (name, (description or "").strip(), color, utc_now()))
+        conn.commit()
+        row = conn.execute("select * from access_groups where name = ?", (name,)).fetchone()
+    return row_to_group(row)
+
+
+def update_access_group(group_id, name, description="", color=""):
+    name = validate_access_name(name, "group name")
+    color = (color or "").strip()
+    if color and not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        raise ValueError("group color must be a hex color like #64c18c")
+    with db_connect() as conn:
+        conn.execute("update access_groups set name = ?, description = ?, color = ? where id = ?", (name, (description or "").strip(), color, group_id))
+        conn.commit()
+        row = conn.execute("select * from access_groups where id = ?", (group_id,)).fetchone()
+    if not row:
+        raise ValueError("group not found")
+    return row_to_group(row)
+
+
+def delete_access_group(group_id):
+    with db_connect() as conn:
+        conn.execute("delete from access_user_groups where group_id = ?", (group_id,))
+        conn.execute("delete from access_policy_links where source_group_id = ? or target_group_id = ?", (group_id, group_id))
+        deleted = conn.execute("delete from access_groups where id = ?", (group_id,)).rowcount
+        conn.commit()
+    return {"deleted_rows": deleted}
+
+
+def list_access_roles():
+    with db_connect() as conn:
+        rows = conn.execute("select * from access_roles order by lower(name)").fetchall()
+    return [row_to_role(row) for row in rows]
+
+
+def list_access_groups():
+    with db_connect() as conn:
+        rows = conn.execute("select * from access_groups order by lower(name)").fetchall()
+    return [row_to_group(row) for row in rows]
+
+
+def list_policy_links():
+    with db_connect() as conn:
+        rows = conn.execute("select * from access_policy_links order by source_group_id, target_group_id").fetchall()
+    return [row_to_policy_link(row) for row in rows]
+
+
+def set_user_access(user_id, role_id=None, group_ids=None):
+    group_ids = [int(value) for value in (group_ids or []) if str(value).strip()]
+    role_id = int(role_id or 0) or None
+    with db_connect() as conn:
+        if role_id and not conn.execute("select id from access_roles where id = ?", (role_id,)).fetchone():
+            raise ValueError("role not found")
+        if group_ids:
+            placeholders = ",".join("?" for _ in group_ids)
+            found = {row["id"] for row in conn.execute(f"select id from access_groups where id in ({placeholders})", group_ids).fetchall()}
+            missing = sorted(set(group_ids) - found)
+            if missing:
+                raise ValueError(f"group not found: {missing[0]}")
+        if not conn.execute("select id from portal_users where id = ?", (user_id,)).fetchone():
+            raise ValueError("user not found")
+        conn.execute("update portal_users set role_id = ? where id = ?", (role_id, user_id))
+        conn.execute("delete from access_user_groups where user_id = ?", (user_id,))
+        conn.executemany("insert into access_user_groups (user_id, group_id) values (?, ?)", [(user_id, gid) for gid in group_ids])
+        conn.commit()
+    return attach_access_to_users([portal_user_row(find_portal_user(user_id))])[0]
+
+
+def bulk_set_user_access(user_ids, role_id=None, group_ids=None, group_mode="replace"):
+    user_ids = sorted({int(value) for value in (user_ids or []) if str(value).strip()})
+    if not user_ids:
+        raise ValueError("select at least one user")
+    group_ids = [int(value) for value in (group_ids or []) if str(value).strip()]
+    group_mode = (group_mode or "replace").strip().lower()
+    if group_mode not in ("replace", "add", "remove"):
+        raise ValueError("group mode must be replace, add, or remove")
+    role_id = int(role_id or 0) or None
+    with db_connect() as conn:
+        placeholders = ",".join("?" for _ in user_ids)
+        found_users = {row["id"] for row in conn.execute(f"select id from portal_users where id in ({placeholders})", user_ids).fetchall()}
+        missing_users = sorted(set(user_ids) - found_users)
+        if missing_users:
+            raise ValueError(f"user not found: {missing_users[0]}")
+        if role_id and not conn.execute("select id from access_roles where id = ?", (role_id,)).fetchone():
+            raise ValueError("role not found")
+        if group_ids:
+            group_placeholders = ",".join("?" for _ in group_ids)
+            found_groups = {row["id"] for row in conn.execute(f"select id from access_groups where id in ({group_placeholders})", group_ids).fetchall()}
+            missing_groups = sorted(set(group_ids) - found_groups)
+            if missing_groups:
+                raise ValueError(f"group not found: {missing_groups[0]}")
+        if role_id is not None:
+            conn.executemany("update portal_users set role_id = ? where id = ?", [(role_id, user_id) for user_id in user_ids])
+        if group_mode == "replace":
+            conn.executemany("delete from access_user_groups where user_id = ?", [(user_id,) for user_id in user_ids])
+            conn.executemany(
+                "insert into access_user_groups (user_id, group_id) values (?, ?)",
+                [(user_id, gid) for user_id in user_ids for gid in group_ids],
+            )
+        elif group_mode == "add" and group_ids:
+            conn.executemany(
+                "insert or ignore into access_user_groups (user_id, group_id) values (?, ?)",
+                [(user_id, gid) for user_id in user_ids for gid in group_ids],
+            )
+        elif group_mode == "remove" and group_ids:
+            conn.executemany(
+                "delete from access_user_groups where user_id = ? and group_id = ?",
+                [(user_id, gid) for user_id in user_ids for gid in group_ids],
+            )
+        conn.commit()
+    return {"ok": True, "updated": len(user_ids)}
+
+
+def set_policy_link(source_group_id, target_group_id, can_see=False, can_send=False):
+    source_group_id = int(source_group_id)
+    target_group_id = int(target_group_id)
+    with db_connect() as conn:
+        for gid in (source_group_id, target_group_id):
+            if not conn.execute("select id from access_groups where id = ?", (gid,)).fetchone():
+                raise ValueError("group not found")
+        if can_see or can_send:
+            conn.execute("""
+                insert into access_policy_links (source_group_id, target_group_id, can_see, can_send)
+                values (?, ?, ?, ?)
+                on conflict(source_group_id, target_group_id) do update set
+                    can_see = excluded.can_see,
+                    can_send = excluded.can_send
+            """, (source_group_id, target_group_id, 1 if can_see else 0, 1 if can_send else 0))
+        else:
+            conn.execute("delete from access_policy_links where source_group_id = ? and target_group_id = ?", (source_group_id, target_group_id))
+        conn.commit()
+        row = conn.execute("select * from access_policy_links where source_group_id = ? and target_group_id = ?", (source_group_id, target_group_id)).fetchone()
+    return row_to_policy_link(row) if row else {"source_group_id": source_group_id, "target_group_id": target_group_id, "can_see": False, "can_send": False}
+
+
+def subject_policy(user_id):
+    with db_connect() as conn:
+        row = conn.execute("""
+            select u.id, u.username, r.can_see_all, r.can_send_all, r.can_see_own_groups, r.can_send_own_groups
+            from portal_users u
+            left join access_roles r on r.id = u.role_id
+            where u.id = ? and u.revoked_at is null
+        """, (user_id,)).fetchone()
+        if not row:
+            return None
+        groups = {group_row["group_id"] for group_row in conn.execute("select group_id from access_user_groups where user_id = ?", (user_id,)).fetchall()}
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "can_see_all": bool(row["can_see_all"]),
+        "can_send_all": bool(row["can_send_all"]),
+        "can_see_own_groups": bool(row["can_see_own_groups"]),
+        "can_send_own_groups": bool(row["can_send_own_groups"]),
+        "groups": groups,
+    }
+
+
+def can_subject_action(viewer_id, target_id, action):
+    if int(viewer_id) == int(target_id):
+        return True
+    viewer = subject_policy(viewer_id)
+    target = subject_policy(target_id)
+    if not viewer or not target:
+        return False
+    if viewer[f"can_{action}_all"]:
+        return True
+    if viewer[f"can_{action}_own_groups"] and viewer["groups"] & target["groups"]:
+        return True
+    if not viewer["groups"] or not target["groups"]:
+        return False
+    column = f"can_{action}"
+    with db_connect() as conn:
+        source_placeholders = ",".join("?" for _ in viewer["groups"])
+        target_placeholders = ",".join("?" for _ in target["groups"])
+        params = list(viewer["groups"]) + list(target["groups"])
+        row = conn.execute(f"""
+            select 1
+            from access_policy_links
+            where source_group_id in ({source_placeholders})
+              and target_group_id in ({target_placeholders})
+              and {column} = 1
+            limit 1
+        """, params).fetchone()
+    return bool(row)
+
+
+def can_subject_see(viewer_id, target_id):
+    return can_subject_action(viewer_id, target_id, "see")
+
+
+def can_subject_send(viewer_id, target_id):
+    return can_subject_action(viewer_id, target_id, "send")
+
+
+def access_summary():
+    return {
+        "roles": list_access_roles(),
+        "groups": list_access_groups(),
+        "links": list_policy_links(),
+    }
+
+
+def create_policy_subject(username, role_id=None, group_ids=None):
+    username = validate_portal_username(username)
+    with db_connect() as conn:
+        conn.execute("""
+            insert into cert_profiles
+              (name, description, download_token, connect_string, truststore_file, client_cert_file, datapackage_file, created_at, revoked_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, null)
+        """, (username, "test policy subject", secrets.token_urlsafe(18), "10.66.66.1:8089:ssl", "", "", "", utc_now()))
+        profile_id = conn.execute("select id from cert_profiles where name = ?", (username,)).fetchone()["id"]
+        conn.execute("""
+            insert into portal_users
+              (username, password_hash, display_name, description, cert_profile_id, allow_redownload, created_at, revoked_at, role_id)
+            values (?, ?, ?, ?, ?, 0, ?, null, ?)
+        """, (username, password_hash("atakatak"), username, "", profile_id, utc_now(), role_id))
+        user_id = conn.execute("select id from portal_users where username = ?", (username,)).fetchone()["id"]
+        conn.commit()
+    return set_user_access(user_id, role_id=role_id, group_ids=group_ids)
+
+
 def build_bulk_usernames(prefix, count):
     prefix = (prefix or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,56}", prefix):
@@ -479,20 +877,23 @@ def ensure_bulk_users_available(usernames):
         raise ValueError(f"bulk user/profile already exists: {preview}{suffix}")
 
 
-def create_bulk_portal_users(prefix, count, description="", allow_redownload=False, base_url=""):
+def create_bulk_portal_users(prefix, count, description="", allow_redownload=False, base_url="", role_id=None, group_ids=None):
     usernames = build_bulk_usernames(prefix, count)
     ensure_bulk_users_available(usernames)
     shared_password = BULK_PORTAL_PASSWORD
     items = []
     note = (description or "").strip()
     for username in usernames:
-        user = create_portal_user(
+        create_args = [
             username,
             shared_password,
             username,
             note or f"Bulk user {username}",
             allow_redownload,
-        )
+        ]
+        if role_id or group_ids:
+            create_args.extend([role_id, group_ids])
+        user = create_portal_user(*create_args)
         portal_path = user.get("portal_path") or "/connect/"
         items.append({
             **user,
@@ -518,6 +919,7 @@ def portal_user_row(row):
     profile = row["profile_name"] or ""
     revoked = bool(row["revoked_at"] or row["profile_revoked_at"])
     username = row["username"]
+    role_id = row["role_id"] if "role_id" in row.keys() else None
     return {
         "id": row["id"],
         "username": username,
@@ -533,9 +935,44 @@ def portal_user_row(row):
         "created_at": row["created_at"],
         "revoked_at": row["revoked_at"] or row["profile_revoked_at"] or "",
         "revoked": revoked,
+        "role_id": role_id,
+        "role_name": "",
+        "groups": [],
+        "group_ids": [],
         "portal_path": f"/connect/?u={quote(username)}",
         "qr_path": f"/api/portal-users/qr?id={row['id']}",
     }
+
+
+def attach_access_to_users(items):
+    if not items:
+        return items
+    user_ids = [item["id"] for item in items]
+    placeholders = ",".join("?" for _ in user_ids)
+    with db_connect() as conn:
+        role_rows = conn.execute(f"""
+            select u.id as user_id, r.name as role_name
+            from portal_users u
+            left join access_roles r on r.id = u.role_id
+            where u.id in ({placeholders})
+        """, user_ids).fetchall()
+        group_rows = conn.execute(f"""
+            select ug.user_id, g.id, g.name, g.description, g.color, g.created_at
+            from access_user_groups ug
+            join access_groups g on g.id = ug.group_id
+            where ug.user_id in ({placeholders})
+            order by lower(g.name)
+        """, user_ids).fetchall()
+    role_names = {row["user_id"]: row["role_name"] or "" for row in role_rows}
+    groups_by_user = {user_id: [] for user_id in user_ids}
+    for row in group_rows:
+        groups_by_user.setdefault(row["user_id"], []).append(row_to_group(row))
+    for item in items:
+        groups = groups_by_user.get(item["id"], [])
+        item["role_name"] = role_names.get(item["id"], "")
+        item["groups"] = groups
+        item["group_ids"] = [group["id"] for group in groups]
+    return items
 
 
 def list_portal_users():
@@ -546,7 +983,7 @@ def list_portal_users():
             left join cert_profiles p on p.id = u.cert_profile_id
             order by u.id desc
         """).fetchall()
-    return [portal_user_row(row) for row in rows]
+    return attach_access_to_users([portal_user_row(row) for row in rows])
 
 
 def find_portal_user(user_id):
@@ -569,7 +1006,7 @@ def find_portal_user_by_username(username):
         """, ((username or "").strip(),)).fetchone()
 
 
-def create_portal_user(username, password, display_name="", description="", allow_redownload=False):
+def create_portal_user(username, password, display_name="", description="", allow_redownload=False, role_id=None, group_ids=None):
     username = validate_portal_username(username)
     if len(password or "") < 8:
         raise ValueError("portal password must be at least 8 characters")
@@ -594,7 +1031,9 @@ def create_portal_user(username, password, display_name="", description="", allo
         ))
         conn.commit()
         user_id = conn.execute("select id from portal_users where username = ?", (username,)).fetchone()["id"]
-    return portal_user_row(find_portal_user(user_id))
+    if role_id or group_ids:
+        return set_user_access(user_id, role_id=role_id, group_ids=group_ids)
+    return attach_access_to_users([portal_user_row(find_portal_user(user_id))])[0]
 
 
 def authenticate_portal_user(username, password):
@@ -796,6 +1235,64 @@ def client_cert_authorized(common_name):
             "select revoked_at from cert_profiles where name = ?", (common_name,)
         ).fetchone()
     return bool(row and not row["revoked_at"])
+
+
+def client_identity_for_cert(common_name):
+    common_name = (common_name or "").strip()
+    if not common_name:
+        return None
+    with db_connect() as conn:
+        row = conn.execute("""
+            select u.id as user_id,
+                   u.username,
+                   u.revoked_at as user_revoked_at,
+                   p.id as cert_profile_id,
+                   p.name as cert_name,
+                   p.revoked_at as profile_revoked_at
+            from cert_profiles p
+            left join portal_users u on u.cert_profile_id = p.id
+            where p.name = ?
+        """, (common_name,)).fetchone()
+    if not row or row["profile_revoked_at"] or row["user_revoked_at"] or not row["user_id"]:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "cert_profile_id": row["cert_profile_id"],
+        "cert_cn": row["cert_name"],
+    }
+
+
+def cot_delivery_allowed(sender_user_id, target_user_id, enforce=None):
+    if enforce is None:
+        enforce = ACCESS_CONTROL_ENFORCE
+    if not enforce:
+        return True
+    if not sender_user_id or not target_user_id:
+        return False
+    return can_subject_send(sender_user_id, target_user_id) or can_subject_see(target_user_id, sender_user_id)
+
+
+def package_visible_to_user(package, user_id, enforce=None):
+    if enforce is None:
+        enforce = ACCESS_CONTROL_ENFORCE
+    if not enforce:
+        return True
+    if not user_id:
+        return False
+    visibility = (package.get("Visibility") or package.get("Tool") or "private").lower()
+    creator_user_id = package.get("CreatorUserId")
+    if visibility == "public":
+        return True
+    if not creator_user_id:
+        return False
+    if int(user_id) == int(creator_user_id):
+        return True
+    return can_subject_see(user_id, creator_user_id) and can_subject_send(creator_user_id, user_id)
+
+
+def package_visible_to_request(row, handler):
+    return package_visible_to_user(row_to_package(row), handler.authenticated_user_id(), ACCESS_CONTROL_ENFORCE)
 
 
 def run_openssl(args):
@@ -1016,11 +1513,16 @@ class CotRelay:
                 "transport": getattr(handler.server, "transport", "tcp"),
                 "peer_cert_cn": peer_cert_cn,
                 "peer_cert_present": bool(peer_cert),
+                "user_id": getattr(handler, "user_id", None),
+                "username": "",
                 "uid": "",
                 "callsign": "",
                 "connected_at": now,
                 "last_seen": now,
             }
+            identity = client_identity_for_cert(peer_cert_cn)
+            if identity:
+                self.clients[handler]["username"] = identity["username"]
         self.send_recent(handler)
         self.send_to(handler, server_status_event())
 
@@ -1042,17 +1544,18 @@ class CotRelay:
         with self.lock:
             return list(self.clients.values())
 
-    def remember_event(self, uid, event):
+    def remember_event(self, uid, event, user_id=None):
         with self.lock:
-            self.last_events[uid] = (time.time(), event)
+            self.last_events[uid] = (time.time(), event, user_id)
             cutoff = time.time() - 300
-            for old_uid, (seen, _) in list(self.last_events.items()):
+            for old_uid, (seen, _, _) in list(self.last_events.items()):
                 if seen < cutoff:
                     self.last_events.pop(old_uid, None)
 
     def send_to(self, handler, event):
         try:
-            handler.request.sendall(event)
+            with handler.send_lock:
+                handler.request.sendall(event)
             return True
         except OSError:
             self.remove(handler)
@@ -1060,15 +1563,19 @@ class CotRelay:
 
     def send_recent(self, handler):
         with self.lock:
-            events = [event for _, event in self.last_events.values()]
-        for event in events:
-            self.send_to(handler, event)
+            events = [(event, user_id) for _, event, user_id in self.last_events.values()]
+        for event, sender_user_id in events:
+            if cot_delivery_allowed(sender_user_id, getattr(handler, "user_id", None)):
+                self.send_to(handler, event)
 
     def broadcast(self, sender, event):
         with self.lock:
-            handlers = list(self.clients.keys())
-        for handler in handlers:
+            handlers = [(handler, dict(info)) for handler, info in self.clients.items()]
+        sender_user_id = getattr(sender, "user_id", None) if sender is not None else None
+        for handler, info in handlers:
             if sender is not None and handler is sender:
+                continue
+            if sender is not None and not cot_delivery_allowed(sender_user_id, info.get("user_id")):
                 continue
             self.send_to(handler, event)
 
@@ -1084,6 +1591,13 @@ class CotHandler(BaseRequestHandler):
         self.remote = f"{self.client_address[0]}:{self.client_address[1]}"
         self.bytes_in = 0
         self.events_in = 0
+        self.send_lock = threading.Lock()
+        self.user_id = None
+        self.cert_cn = ""
+        try:
+            self.request.settimeout(SOCKET_SEND_TIMEOUT_SECONDS)
+        except OSError:
+            pass
         transport = getattr(self.server, "transport", "tcp")
         peer_cert_cn = ""
         if hasattr(self.request, "getpeercert"):
@@ -1093,6 +1607,16 @@ class CotHandler(BaseRequestHandler):
                 peer_cert_cn = ""
         if transport == "tls" and not client_cert_authorized(peer_cert_cn):
             print(f"CoT reject {self.remote} transport={transport} cert_cn={peer_cert_cn or 'none'} reason=unauthorized_cert")
+            try:
+                self.request.close()
+            except OSError:
+                pass
+            return
+        identity = client_identity_for_cert(peer_cert_cn)
+        self.user_id = identity["user_id"] if identity else None
+        self.cert_cn = peer_cert_cn
+        if ACCESS_CONTROL_ENFORCE and not self.user_id:
+            print(f"CoT reject {self.remote} transport={transport} cert_cn={peer_cert_cn or 'none'} reason=missing_policy_identity")
             try:
                 self.request.close()
             except OSError:
@@ -1123,7 +1647,7 @@ class CotHandler(BaseRequestHandler):
                 match = EVENT_RE.search(candidate)
                 event = match.group(0) if match else candidate
                 self.events_in += 1
-                save_event(event, self.remote)
+                save_event(event, self.remote, self.user_id)
                 RELAY.broadcast(self, event)
 
     def finish(self):
@@ -1145,6 +1669,66 @@ def absolute_base_url(handler):
     if ":" in host:
         return f"http://{host}"
     return f"http://{host}:{HTTP_PORT}"
+
+
+def dir_size(path):
+    total = 0
+    if not path.exists():
+        return 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            total += item.stat().st_size
+    return total
+
+
+def runtime_health():
+    db_ok = False
+    db_error = ""
+    counts = {}
+    try:
+        with db_connect() as conn:
+            for table in ("admins", "portal_users", "cert_profiles", "datapackages", "events", "access_roles", "access_groups"):
+                counts[table] = int(conn.execute(f"select count(*) from {table}").fetchone()[0])
+            conn.execute("select 1").fetchone()
+        db_ok = True
+    except Exception as exc:
+        db_error = str(exc)
+    db_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    wal_path = DB_PATH.with_name(DB_PATH.name + "-wal")
+    return {
+        "version": VERSION,
+        "database": {
+            "ok": db_ok,
+            "path": str(DB_PATH),
+            "bytes": db_size,
+            "wal_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+            "counts": counts,
+            "error": db_error,
+        },
+        "storage": {
+            "package_dir": str(PACKAGE_DIR),
+            "package_bytes": dir_size(PACKAGE_DIR),
+            "cert_dir": str(CERT_DIR),
+            "cert_bytes": dir_size(CERT_DIR),
+        },
+        "connections": {
+            "clients": len(RELAY.snapshot()),
+            "cot_port": COT_PORT,
+            "cot_tls_port": COT_TLS_PORT,
+            "http_port": HTTP_PORT,
+            "https_port": HTTPS_PORT,
+        },
+        "security": {
+            "access_enforcement": ACCESS_CONTROL_ENFORCE,
+            "cot_tls_require_client_cert": COT_TLS_REQUIRE_CLIENT_CERT,
+            "allow_legacy_client_cert": ALLOW_LEGACY_CLIENT_CERT,
+            "admin_auth_enabled": bool(ADMIN_TOKEN),
+        },
+        "wireguard": {
+            "dashboard_url": WG_DASHBOARD_URL,
+            "visible_from_container": False,
+        },
+    }
 
 
 def heartbeat_loop():
@@ -1316,6 +1900,18 @@ class HttpHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
         return None
 
+    def client_cert_common_name(self):
+        if hasattr(self.connection, "getpeercert"):
+            try:
+                return cert_common_name(self.connection.getpeercert() or {})
+            except OSError:
+                return ""
+        return ""
+
+    def authenticated_user_id(self):
+        identity = client_identity_for_cert(self.client_cert_common_name())
+        return identity["user_id"] if identity else None
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -1409,7 +2005,7 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_json({"version": 2, "type": "CitrapList", "data": []})
             return
         if path in ("/Marti/sync/search", "/sync/search"):
-            items = list_packages()
+            items = list_packages(self.authenticated_user_id(), ACCESS_CONTROL_ENFORCE)
             self.send_json({"resultCount": len(items), "results": items})
             return
         if path in ("/Marti/sync/missionquery", "/sync/missionquery"):
@@ -1418,6 +2014,9 @@ class HttpHandler(BaseHTTPRequestHandler):
             if not row:
                 self.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
                 return
+            if not package_visible_to_request(row, self):
+                self.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
+                return
             self.send_text(f"{absolute_base_url(self)}/Marti/sync/content?hash={quote(hash_value)}")
             return
         if path in ("/Marti/sync/content", "/sync/content"):
@@ -1425,6 +2024,9 @@ class HttpHandler(BaseHTTPRequestHandler):
             row = find_package(hash_value)
             if not row:
                 self.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if not package_visible_to_request(row, self):
+                self.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
                 return
             package = Path(row["Path"])
             if not package.exists():
@@ -1473,7 +2075,12 @@ class HttpHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             tls_enabled = HTTPS_CERT.exists() and HTTPS_KEY.exists()
-            self.send_json({"ok": True, "version": VERSION, "cot_port": COT_PORT, "cot_tls_port": COT_TLS_PORT if tls_enabled else None, "http_port": HTTP_PORT, "https_port": HTTPS_PORT if tls_enabled else None, "clients": len(RELAY.snapshot()), "packages": len(list_packages()), "auth_enabled": bool(ADMIN_TOKEN)})
+            self.send_json({"ok": True, "version": VERSION, "cot_port": COT_PORT, "cot_tls_port": COT_TLS_PORT if tls_enabled else None, "http_port": HTTP_PORT, "https_port": HTTPS_PORT if tls_enabled else None, "clients": len(RELAY.snapshot()), "packages": len(list_packages()), "auth_enabled": bool(ADMIN_TOKEN), "access_enforcement": ACCESS_CONTROL_ENFORCE})
+            return
+        if path == "/api/system-health":
+            if not self.require_auth():
+                return
+            self.send_json(runtime_health())
             return
         if path == "/api/ui-config":
             self.send_json({"wgDashboardUrl": WG_DASHBOARD_URL})
@@ -1497,6 +2104,11 @@ class HttpHandler(BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json({"items": list_portal_users(), "portal_url": f"{absolute_base_url(self)}/connect/"})
+            return
+        if path == "/api/access-control":
+            if not self.require_auth():
+                return
+            self.send_json(access_summary())
             return
         if path == "/api/portal-users/qr":
             if not self.require_auth():
@@ -1597,13 +2209,17 @@ class HttpHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
             if path in ("/Marti/sync/missionupload", "/sync/missionupload"):
+                creator_user_id = self.authenticated_user_id()
+                if ACCESS_CONTROL_ENFORCE and not creator_user_id:
+                    self.send_json({"error": "client certificate identity required"}, HTTPStatus.FORBIDDEN)
+                    return
                 filename, data = parse_upload(self)
                 if not data:
                     raise ValueError("empty upload")
                 hash_value = qs.get("hash", [""])[0]
                 query_name = qs.get("filename", [""])[0]
                 creator_uid = qs.get("creatorUid", [""])[0]
-                url = upsert_package(hash_value, unquote(query_name or filename or ""), creator_uid, data, absolute_base_url(self))
+                url = upsert_package(hash_value, unquote(query_name or filename or ""), creator_uid, data, absolute_base_url(self), creator_user_id=creator_user_id, visibility="private")
                 self.send_text(url)
                 return
             if path == "/api/datapackages/delete":
@@ -1631,6 +2247,8 @@ class HttpHandler(BaseHTTPRequestHandler):
                     payload.get("display_name", ""),
                     payload.get("description", ""),
                     bool(payload.get("allow_redownload", False)),
+                    payload.get("role_id"),
+                    payload.get("group_ids", []),
                 ))
                 return
             if path == "/api/portal-users/bulk-create":
@@ -1643,6 +2261,82 @@ class HttpHandler(BaseHTTPRequestHandler):
                     payload.get("description", ""),
                     bool(payload.get("allow_redownload", False)),
                     absolute_base_url(self),
+                    payload.get("role_id"),
+                    payload.get("group_ids", []),
+                ))
+                return
+            if path == "/api/access-roles/create":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(create_access_role(
+                    payload.get("name", ""),
+                    payload.get("description", ""),
+                    bool(payload.get("can_see_all", False)),
+                    bool(payload.get("can_send_all", False)),
+                    bool(payload.get("can_see_own_groups", True)),
+                    bool(payload.get("can_send_own_groups", True)),
+                ))
+                return
+            if path == "/api/access-roles/update":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(update_access_role(
+                    int(payload.get("id", 0)),
+                    payload.get("name", ""),
+                    payload.get("description", ""),
+                    bool(payload.get("can_see_all", False)),
+                    bool(payload.get("can_send_all", False)),
+                    bool(payload.get("can_see_own_groups", True)),
+                    bool(payload.get("can_send_own_groups", True)),
+                ))
+                return
+            if path == "/api/access-roles/delete":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(delete_access_role(int(payload.get("id", 0))))
+                return
+            if path == "/api/access-groups/create":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(create_access_group(payload.get("name", ""), payload.get("description", ""), payload.get("color", "")))
+                return
+            if path == "/api/access-groups/update":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(update_access_group(int(payload.get("id", 0)), payload.get("name", ""), payload.get("description", ""), payload.get("color", "")))
+                return
+            if path == "/api/access-groups/delete":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(delete_access_group(int(payload.get("id", 0))))
+                return
+            if path == "/api/access-users/set":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(set_user_access(int(payload.get("user_id", 0)), payload.get("role_id"), payload.get("group_ids", [])))
+                return
+            if path == "/api/access-users/bulk-set":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(bulk_set_user_access(payload.get("user_ids", []), payload.get("role_id"), payload.get("group_ids", []), payload.get("group_mode", "replace")))
+                return
+            if path == "/api/access-links/set":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                self.send_json(set_policy_link(
+                    int(payload.get("source_group_id", 0)),
+                    int(payload.get("target_group_id", 0)),
+                    bool(payload.get("can_see", False)),
+                    bool(payload.get("can_send", False)),
                 ))
                 return
             if path == "/api/portal-users/reset-password":
@@ -1810,7 +2504,7 @@ def main():
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     if HTTPS_CERT.exists() and HTTPS_KEY.exists():
         cot_tls_context = server_tls_context(request_client_cert=True)
-        https_context = server_tls_context(request_client_cert=False)
+        https_context = server_tls_context(request_client_cert=True)
         cot_tls_server = CotServer((COT_TLS_BIND, COT_TLS_PORT), CotHandler, "tls")
         cot_tls_server.socket = cot_tls_context.wrap_socket(cot_tls_server.socket, server_side=True)
         threading.Thread(target=cot_tls_server.serve_forever, daemon=True).start()

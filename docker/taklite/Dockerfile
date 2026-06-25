@@ -16,6 +16,8 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates openssl python3 qrencode \
+    && groupadd --system --gid 10001 taklite \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin taklite \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -23,4 +25,5 @@ COPY docker/taklite/taklite_service.py /app/taklite_service.py
 COPY --from=frontend /frontend/dist /app/static
 
 EXPOSE 8080 8443 58087 8089
+USER 10001:10001
 ENTRYPOINT ["python3", "/app/taklite_service.py"]

@@ -110,6 +110,16 @@ collect_settings() {
   TAKLITE_PUBLIC_HOST="$(prompt_default "TAKlite API host used in package URLs" "${TAKLITE_BIND_IP}")"
   TAKLITE_ADMIN_TOKEN="$(prompt_default "TAKlite admin token" "$(random_token)")"
   TAKLITE_CERT_PASSWORD="$(prompt_default "ATAK/WinTAK certificate password" "atakatak")"
+  TAKLITE_SECURE_MODE="$(prompt_default "Enable secure mode: require TLS cert identity and enforce groups" "no")"
+  if [[ "${TAKLITE_SECURE_MODE,,}" =~ ^(y|yes|true|1)$ ]]; then
+    TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT="true"
+    TAKLITE_ALLOW_LEGACY_CLIENT_CERT="false"
+    TAKLITE_ACCESS_CONTROL_ENFORCE="true"
+  else
+    TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT="false"
+    TAKLITE_ALLOW_LEGACY_CLIENT_CERT="true"
+    TAKLITE_ACCESS_CONTROL_ENFORCE="false"
+  fi
   TAKLITE_COT_HOST_PORT="$(prompt_default "TAKlite plain CoT TCP host port" "58087")"
   TAKLITE_COT_TLS_HOST_PORT="$(prompt_default "TAKlite TLS CoT TCP host port" "8089")"
   TAKLITE_HTTP_HOST_PORT="$(prompt_default "TAKlite HTTP/admin host port" "8080")"
@@ -355,6 +365,7 @@ EOF_CERT
       -passout pass:${cert_password}
     chmod 644 "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
   fi
+  chown -R 10001:10001 "${BASE_DIR}/taklite/data" "${BASE_DIR}/taklite/packages" "${BASE_DIR}/taklite/certs"
   cat >"${BASE_DIR}/.env" <<EOF
 WG_BIND_IP=${TAKLITE_BIND_IP}
 TAKLITE_PUBLIC_HOST=${TAKLITE_PUBLIC_HOST}
@@ -367,8 +378,10 @@ TAKLITE_HTTP_HOST_PORT=${TAKLITE_HTTP_HOST_PORT}
 TAKLITE_HTTPS_HOST_PORT=${TAKLITE_HTTPS_HOST_PORT}
 TAKLITE_WGDASHBOARD_URL=http://${WGD_BIND_IP}:${WGD_PORT}
 TAKLITE_MAX_UPLOAD_BYTES=268435456
-TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=false
-TAKLITE_ALLOW_LEGACY_CLIENT_CERT=true
+TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT}
+TAKLITE_ALLOW_LEGACY_CLIENT_CERT=${TAKLITE_ALLOW_LEGACY_CLIENT_CERT}
+TAKLITE_ACCESS_CONTROL_ENFORCE=${TAKLITE_ACCESS_CONTROL_ENFORCE}
+TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS=2.5
 EOF
   chmod 600 "${BASE_DIR}/.env"
 
@@ -428,6 +441,11 @@ ATAK/WinTAK SSL connection packages:
   create and download per-user .dp.zip packages in the TAKlite UI
   TAKlite UI: http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/
   certificate password: ${TAKLITE_CERT_PASSWORD}
+
+TAKlite security mode:
+  access enforcement: ${TAKLITE_ACCESS_CONTROL_ENFORCE}
+  TLS client cert required: ${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT}
+  legacy shared cert CN allowed: ${TAKLITE_ALLOW_LEGACY_CLIENT_CERT}
 
 Mission/datapackage HTTP base:
   http://${TAKLITE_PUBLIC_HOST}:${TAKLITE_HTTP_HOST_PORT}/Marti
@@ -501,6 +519,10 @@ A root-only copy was saved at:
 6. ATAK/WinTAK SSL connection packages:
    open TAKlite, log in, create a connection package, then import the downloaded .dp.zip
    certificate password: ${TAKLITE_CERT_PASSWORD}
+
+Security mode:
+   access enforcement: ${TAKLITE_ACCESS_CONTROL_ENFORCE}
+   TLS client cert required: ${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT}
 
 Saved notes:
    ${ADMIN_OUT_DIR}/README.txt

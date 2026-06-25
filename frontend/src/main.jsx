@@ -9,6 +9,7 @@ import {
   FileArchive,
   Gauge,
   KeyRound,
+  Link2,
   LayoutDashboard,
   LogOut,
   PackagePlus,
@@ -16,6 +17,7 @@ import {
   QrCode,
   RefreshCw,
   RotateCw,
+  ShieldCheck,
   Trash2,
   UserPlus,
   Users,
@@ -27,10 +29,12 @@ import './styles.css';
 const SESSION_KEY = 'takliteSession';
 const navItems = [
   ['overview', LayoutDashboard, 'Overview'],
+  ['health', Gauge, 'Health'],
   ['clients', Wifi, 'Clients'],
   ['datapackages', FileArchive, 'Datapackages'],
   ['users', Users, 'Users'],
   ['packages', Boxes, 'Connection Packages'],
+  ['access', ShieldCheck, 'Access'],
 ];
 
 function authHeaders(session, extra = {}) {
@@ -122,6 +126,8 @@ function App() {
     packages: [],
     profiles: [],
     portalUsers: [],
+    access: { roles: [], groups: [], links: [] },
+    systemHealth: null,
     portalUrl: '',
     certPassword: '',
   });
@@ -144,11 +150,13 @@ function App() {
     setLoading(true);
     try {
       const health = await fetch('/api/health').then((r) => r.json());
-      const [packages, clients, profiles, portal] = await Promise.all([
+      const [packages, clients, profiles, portal, access, systemHealth] = await Promise.all([
         api('/api/datapackages', session),
         api('/api/clients', session),
         api('/api/cert-profiles', session),
         api('/api/portal-users', session),
+        api('/api/access-control', session),
+        api('/api/system-health', session),
       ]);
       setData({
         health,
@@ -156,6 +164,8 @@ function App() {
         clients: clients.items || [],
         profiles: profiles.items || [],
         portalUsers: portal.items || [],
+        access: access || { roles: [], groups: [], links: [] },
+        systemHealth,
         portalUrl: portal.portal_url || `${location.origin}/connect/`,
         certPassword: profiles.cert_password || '',
       });
@@ -188,7 +198,7 @@ function App() {
     } catch {}
     localStorage.removeItem(SESSION_KEY);
     setSession('');
-    setData({ health: null, clients: [], packages: [], profiles: [], portalUsers: [], portalUrl: '', certPassword: '' });
+    setData({ health: null, clients: [], packages: [], profiles: [], portalUsers: [], access: { roles: [], groups: [], links: [] }, systemHealth: null, portalUrl: '', certPassword: '' });
     await loadBootstrap();
   };
 
@@ -247,10 +257,12 @@ function App() {
         <OverviewStrip data={data} />
 
         {active === 'overview' && <Overview data={data} session={session} load={load} setStatus={setStatus} />}
+        {active === 'health' && <HealthPanel health={data.systemHealth} />}
         {active === 'clients' && <ClientsPanel clients={data.clients} />}
         {active === 'datapackages' && <DatapackagesPanel packages={data.packages} session={session} load={load} setStatus={setStatus} />}
-        {active === 'users' && <UsersPanel users={data.portalUsers} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
+        {active === 'users' && <UsersPanel users={data.portalUsers} access={data.access} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
         {active === 'packages' && <ProfilesPanel profiles={data.profiles} certPassword={data.certPassword} session={session} load={load} setStatus={setStatus} />}
+        {active === 'access' && <AccessPanel users={data.portalUsers} access={data.access} session={session} load={load} setStatus={setStatus} />}
       </main>
     </div>
   );
@@ -322,6 +334,7 @@ function OverviewStrip({ data }) {
     ['Datapackages', String(data.packages.length), FileArchive],
     ['Users', String(data.portalUsers.length), Users],
     ['Packages', String(data.profiles.length), Boxes],
+    ['Access', String((data.access?.roles?.length || 0) + (data.access?.groups?.length || 0)), ShieldCheck],
   ];
   return (
     <section className="stat-strip">
@@ -350,6 +363,57 @@ function Overview({ data, session, load, setStatus }) {
       <Panel title="Connection Users" icon={Users} wide>
         <UsersTable users={data.portalUsers.slice(0, 6)} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} compact />
       </Panel>
+    </div>
+  );
+}
+
+function HealthPanel({ health }) {
+  if (!health) return <Panel title="Server Health" icon={Gauge} wide><Empty title="Health loading" detail="Refresh the dashboard to reload service health." /></Panel>;
+  const database = health.database || {};
+  const storage = health.storage || {};
+  const security = health.security || {};
+  const connections = health.connections || {};
+  return (
+    <div className="dashboard-grid">
+      <Panel title="Server Health" icon={Gauge}>
+        <div className="health-grid">
+          <HealthMetric label="Version" value={health.version || '-'} />
+          <HealthMetric label="Database" value={database.ok ? 'Online' : 'Error'} tone={database.ok ? 'good' : 'bad'} />
+          <HealthMetric label="Clients" value={connections.clients ?? 0} />
+          <HealthMetric label="Packages" value={database.counts?.datapackages ?? 0} />
+        </div>
+      </Panel>
+      <Panel title="Storage" icon={FileArchive}>
+        <div className="health-grid">
+          <HealthMetric label="Database" value={fmtBytes(database.bytes || 0)} />
+          <HealthMetric label="WAL" value={fmtBytes(database.wal_bytes || 0)} />
+          <HealthMetric label="Packages" value={fmtBytes(storage.package_bytes || 0)} />
+          <HealthMetric label="Certificates" value={fmtBytes(storage.cert_bytes || 0)} />
+        </div>
+      </Panel>
+      <Panel title="Security" icon={ShieldCheck} wide>
+        <div className="health-grid wide">
+          <HealthMetric label="Access Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} />
+          <HealthMetric label="Client Cert Required" value={security.cot_tls_require_client_cert ? 'On' : 'Off'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} />
+          <HealthMetric label="Legacy Cert CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} />
+          <HealthMetric label="Admin Auth" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} />
+          <HealthMetric label="WG Dashboard" value={health.wireguard?.dashboard_url || '-'} />
+        </div>
+      </Panel>
+      {database.error ? (
+        <Panel title="Health Error" icon={XCircle} wide>
+          <div className="error-box">{database.error}</div>
+        </Panel>
+      ) : null}
+    </div>
+  );
+}
+
+function HealthMetric({ label, value, tone = 'neutral' }) {
+  return (
+    <div className={`health-metric ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -465,28 +529,72 @@ async function deletePackage(pkg, session, load, setStatus) {
   await load();
 }
 
-function UsersPanel({ users, portalUrl, session, load, setStatus }) {
+async function editRole(role, session, load, setStatus) {
+  const name = prompt(`Role name`, role.name);
+  if (name === null) return;
+  const description = prompt(`Description for ${name}`, role.description || '');
+  if (description === null) return;
+  await api('/api/access-roles/update', session, { method: 'POST', body: JSON.stringify({ ...role, name, description }) });
+  setStatus('Role updated.');
+  await load();
+}
+
+async function deleteRole(role, session, load, setStatus) {
+  if (!confirm(`Delete role ${role.name}? Users with this role will keep their groups but lose the role.`)) return;
+  await api('/api/access-roles/delete', session, { method: 'POST', body: JSON.stringify({ id: role.id }) });
+  setStatus('Role deleted.');
+  await load();
+}
+
+async function editGroup(group, session, load, setStatus) {
+  const name = prompt(`Group name`, group.name);
+  if (name === null) return;
+  const description = prompt(`Description for ${name}`, group.description || '');
+  if (description === null) return;
+  const color = prompt(`Hex color for ${name}`, group.color || '#64c18c');
+  if (color === null) return;
+  await api('/api/access-groups/update', session, { method: 'POST', body: JSON.stringify({ ...group, name, description, color }) });
+  setStatus('Group updated.');
+  await load();
+}
+
+async function deleteGroup(group, session, load, setStatus) {
+  if (!confirm(`Delete group ${group.name}? Membership and links for this group will be removed.`)) return;
+  await api('/api/access-groups/delete', session, { method: 'POST', body: JSON.stringify({ id: group.id }) });
+  setStatus('Group deleted.');
+  await load();
+}
+
+function UsersPanel({ users, access, portalUrl, session, load, setStatus }) {
   const [showBulk, setShowBulk] = useState(false);
   return (
     <Panel title="Connection Users" icon={Users} wide actions={<span className="hint">Portal: <code>{portalUrl}</code></span>}>
-      <CreateUser session={session} load={load} setStatus={setStatus} />
+      <CreateUser access={access} session={session} load={load} setStatus={setStatus} />
       <div className="panel-tools">
         <button className="btn ghost" type="button" onClick={() => setShowBulk(!showBulk)}><Users size={16} />Create Bulk Users</button>
         <span className="hint">Bulk users receive one shared portal password for the batch.</span>
       </div>
-      {showBulk && <CreateBulkUsers session={session} load={load} setStatus={setStatus} />}
+      {showBulk && <CreateBulkUsers access={access} session={session} load={load} setStatus={setStatus} />}
       <UsersTable users={users} portalUrl={portalUrl} session={session} load={load} setStatus={setStatus} />
     </Panel>
   );
 }
 
-function CreateUser({ session, load, setStatus }) {
-  const [form, setForm] = useState({ username: '', password: '', description: '', allow_redownload: false });
+function CreateUser({ access, session, load, setStatus }) {
+  const roles = access?.roles || [];
+  const groups = access?.groups || [];
+  const [form, setForm] = useState({ username: '', password: '', description: '', allow_redownload: false, role_id: '', group_ids: [] });
+  const toggleGroup = (id) => {
+    const groupIds = new Set(form.group_ids);
+    if (groupIds.has(id)) groupIds.delete(id);
+    else groupIds.add(id);
+    setForm({ ...form, group_ids: [...groupIds] });
+  };
   const submit = async (event) => {
     event.preventDefault();
-    await api('/api/portal-users/create', session, { method: 'POST', body: JSON.stringify(form) });
+    await api('/api/portal-users/create', session, { method: 'POST', body: JSON.stringify({ ...form, role_id: form.role_id || null }) });
     setStatus(`Connection user ${form.username} created.`);
-    setForm({ username: '', password: '', description: '', allow_redownload: false });
+    setForm({ username: '', password: '', description: '', allow_redownload: false, role_id: '', group_ids: [] });
     await load();
   };
   return (
@@ -494,21 +602,41 @@ function CreateUser({ session, load, setStatus }) {
       <label>Username<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="alpha-phone" /></label>
       <label>Password<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Download password" /></label>
       <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
+      <label>Role<select value={form.role_id} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
+        <option value="">No role</option>
+        {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+      </select></label>
+      <div className="group-picks compact">
+        {groups.map((group) => (
+          <label className="check group-chip" key={group.id}>
+            <input type="checkbox" checked={form.group_ids.includes(group.id)} onChange={() => toggleGroup(group.id)} />
+            {group.name}
+          </label>
+        ))}
+      </div>
       <label className="check"><input type="checkbox" checked={form.allow_redownload} onChange={(e) => setForm({ ...form, allow_redownload: e.target.checked })} /> Allow re-download</label>
       <button className="btn primary" type="submit"><UserPlus size={16} />Create User</button>
     </form>
   );
 }
 
-function CreateBulkUsers({ session, load, setStatus }) {
-  const [form, setForm] = useState({ prefix: 'user', count: 20, description: '', allow_redownload: false });
+function CreateBulkUsers({ access, session, load, setStatus }) {
+  const roles = access?.roles || [];
+  const groups = access?.groups || [];
+  const [form, setForm] = useState({ prefix: 'user', count: 20, description: '', allow_redownload: false, role_id: '', group_ids: [] });
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+  const toggleGroup = (id) => {
+    const groupIds = new Set(form.group_ids);
+    if (groupIds.has(id)) groupIds.delete(id);
+    else groupIds.add(id);
+    setForm({ ...form, group_ids: [...groupIds] });
+  };
   const submit = async (event) => {
     event.preventDefault();
     setBusy(true);
     try {
-      const body = await api('/api/portal-users/bulk-create', session, { method: 'POST', body: JSON.stringify(form) });
+      const body = await api('/api/portal-users/bulk-create', session, { method: 'POST', body: JSON.stringify({ ...form, role_id: form.role_id || null }) });
       setResult(body);
       setStatus(`Created ${body.count} bulk connection user(s). Save the shared password before leaving this page.`);
       await load();
@@ -524,9 +652,23 @@ function CreateBulkUsers({ session, load, setStatus }) {
         <label>Name prefix<input value={form.prefix} onChange={(e) => setForm({ ...form, prefix: e.target.value })} placeholder="user" /></label>
         <label>Number<input type="number" min="1" max="100" value={form.count} onChange={(e) => setForm({ ...form, count: e.target.value })} /></label>
         <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
+        <label>Role<select value={form.role_id} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
+          <option value="">No role</option>
+          {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+        </select></label>
         <label className="check"><input type="checkbox" checked={form.allow_redownload} onChange={(e) => setForm({ ...form, allow_redownload: e.target.checked })} /> Allow re-download</label>
         <button className="btn primary" type="submit" disabled={busy}><UserPlus size={16} />{busy ? 'Creating...' : 'Create Batch'}</button>
       </form>
+      {groups.length ? (
+        <div className="group-picks">
+          {groups.map((group) => (
+            <label className="check group-chip" key={group.id}>
+              <input type="checkbox" checked={form.group_ids.includes(group.id)} onChange={() => toggleGroup(group.id)} />
+              <span className="color-dot" style={{ background: group.color || '#64c18c' }} /> {group.name}
+            </label>
+          ))}
+        </div>
+      ) : null}
       {items.length > 0 && (
         <div className="bulk-result">
           <div className="bulk-summary">
@@ -569,6 +711,287 @@ function CreateBulkUsers({ session, load, setStatus }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AccessPanel({ users, access, session, load, setStatus }) {
+  const roles = access?.roles || [];
+  const groups = access?.groups || [];
+  const links = access?.links || [];
+  return (
+    <div className="dashboard-grid">
+      <Panel title="Roles" icon={ShieldCheck}>
+        <CreateRole session={session} load={load} setStatus={setStatus} />
+        <RolesTable roles={roles} session={session} load={load} setStatus={setStatus} />
+      </Panel>
+      <Panel title="Groups" icon={Users}>
+        <CreateGroup session={session} load={load} setStatus={setStatus} />
+        <GroupsTable groups={groups} session={session} load={load} setStatus={setStatus} />
+      </Panel>
+      <Panel title="Bulk User Access" icon={Users} wide>
+        <BulkAccess users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
+      </Panel>
+      <Panel title="Group Links" icon={Link2} wide>
+        <GroupLinks groups={groups} links={links} session={session} load={load} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
+function CreateRole({ session, load, setStatus }) {
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    can_see_all: false,
+    can_send_all: false,
+    can_see_own_groups: true,
+    can_send_own_groups: true,
+  });
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      await api('/api/access-roles/create', session, { method: 'POST', body: JSON.stringify(form) });
+      setStatus(`Role ${form.name} created.`);
+      setForm({ name: '', description: '', can_see_all: false, can_send_all: false, can_see_own_groups: true, can_send_own_groups: true });
+      await load();
+    } catch (error) {
+      setStatus(`Role create failed: ${error.message}`);
+    }
+  };
+  return (
+    <form className="access-create" onSubmit={submit}>
+      <label>Role name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Supervisor" /></label>
+      <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
+      <div className="check-row">
+        <label className="check"><input type="checkbox" checked={form.can_see_all} onChange={(e) => setForm({ ...form, can_see_all: e.target.checked })} /> See all</label>
+        <label className="check"><input type="checkbox" checked={form.can_send_all} onChange={(e) => setForm({ ...form, can_send_all: e.target.checked })} /> Send all</label>
+        <label className="check"><input type="checkbox" checked={form.can_see_own_groups} onChange={(e) => setForm({ ...form, can_see_own_groups: e.target.checked })} /> See own groups</label>
+        <label className="check"><input type="checkbox" checked={form.can_send_own_groups} onChange={(e) => setForm({ ...form, can_send_own_groups: e.target.checked })} /> Send own groups</label>
+      </div>
+      <button className="btn primary" type="submit"><ShieldCheck size={16} />Create Role</button>
+    </form>
+  );
+}
+
+function RolesTable({ roles, session, load, setStatus }) {
+  if (!roles.length) return <Empty title="No roles" detail="Create generic roles, then assign them to connection users." />;
+  const updateRole = async (role, patch) => {
+    try {
+      await api('/api/access-roles/update', session, { method: 'POST', body: JSON.stringify({ ...role, ...patch }) });
+      setStatus('Role updated.');
+      await load();
+    } catch (error) {
+      setStatus(`Role update failed: ${error.message}`);
+    }
+  };
+  return (
+    <div className="table-wrap">
+      <table className="access-table">
+        <thead><tr><th>Role</th><th>Permissions</th><th>Action</th></tr></thead>
+        <tbody>
+          {roles.map((role) => (
+            <tr key={role.id}>
+              <td><strong>{role.name}</strong><span>{role.description || '-'}</span></td>
+              <td>
+                <div className="check-row compact">
+                  <label className="check"><input type="checkbox" checked={role.can_see_all} onChange={(e) => updateRole(role, { can_see_all: e.target.checked })} /> See all</label>
+                  <label className="check"><input type="checkbox" checked={role.can_send_all} onChange={(e) => updateRole(role, { can_send_all: e.target.checked })} /> Send all</label>
+                  <label className="check"><input type="checkbox" checked={role.can_see_own_groups} onChange={(e) => updateRole(role, { can_see_own_groups: e.target.checked })} /> See own</label>
+                  <label className="check"><input type="checkbox" checked={role.can_send_own_groups} onChange={(e) => updateRole(role, { can_send_own_groups: e.target.checked })} /> Send own</label>
+                </div>
+              </td>
+              <td>
+                <div className="row-actions">
+                  <button className="icon-btn" title="Edit" onClick={() => editRole(role, session, load, setStatus)}><Pencil size={15} /></button>
+                  <button className="icon-btn danger" title="Delete" onClick={() => deleteRole(role, session, load, setStatus)}><Trash2 size={15} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CreateGroup({ session, load, setStatus }) {
+  const [form, setForm] = useState({ name: '', description: '', color: '#64c18c' });
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      await api('/api/access-groups/create', session, { method: 'POST', body: JSON.stringify(form) });
+      setStatus(`Group ${form.name} created.`);
+      setForm({ name: '', description: '', color: '#64c18c' });
+      await load();
+    } catch (error) {
+      setStatus(`Group create failed: ${error.message}`);
+    }
+  };
+  return (
+    <form className="access-create group-create" onSubmit={submit}>
+      <label>Group name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Alpha" /></label>
+      <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
+      <label>Color<input type="color" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} /></label>
+      <button className="btn primary" type="submit"><Users size={16} />Create Group</button>
+    </form>
+  );
+}
+
+function GroupsTable({ groups, session, load, setStatus }) {
+  if (!groups.length) return <Empty title="No groups" detail="Create teams or access buckets, then link them together as needed." />;
+  return (
+    <div className="table-wrap">
+      <table className="access-table">
+        <thead><tr><th>Group</th><th>Description</th><th>Action</th></tr></thead>
+        <tbody>
+          {groups.map((group) => (
+            <tr key={group.id}>
+              <td><strong><span className="color-dot" style={{ background: group.color || '#64c18c' }} />{group.name}</strong></td>
+              <td>{group.description || '-'}</td>
+              <td>
+                <div className="row-actions">
+                  <button className="icon-btn" title="Edit" onClick={() => editGroup(group, session, load, setStatus)}><Pencil size={15} /></button>
+                  <button className="icon-btn danger" title="Delete" onClick={() => deleteGroup(group, session, load, setStatus)}><Trash2 size={15} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BulkAccess({ users, roles, groups, session, load, setStatus }) {
+  const [form, setForm] = useState({ filter: '', role_id: '', group_ids: [], group_mode: 'replace' });
+  const filter = form.filter.trim().toLowerCase();
+  const matched = users.filter((user) => {
+    if (!filter) return true;
+    const haystack = [
+      user.username,
+      user.display_name,
+      user.description,
+      user.role_name,
+      ...(user.groups || []).map((group) => group.name),
+    ].join(' ').toLowerCase();
+    return haystack.includes(filter);
+  });
+  const toggleGroup = (id) => {
+    const groupIds = new Set(form.group_ids);
+    if (groupIds.has(id)) groupIds.delete(id);
+    else groupIds.add(id);
+    setForm({ ...form, group_ids: [...groupIds] });
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!matched.length) {
+      setStatus('No users match that filter.');
+      return;
+    }
+    const names = matched.slice(0, 8).map((user) => user.username).join(', ');
+    const suffix = matched.length > 8 ? '...' : '';
+    if (!confirm(`Apply access changes to ${matched.length} user(s): ${names}${suffix}`)) return;
+    try {
+      await api('/api/access-users/bulk-set', session, {
+        method: 'POST',
+        body: JSON.stringify({
+          user_ids: matched.map((user) => user.id),
+          role_id: form.role_id || null,
+          group_ids: form.group_ids,
+          group_mode: form.group_mode,
+        }),
+      });
+      setStatus(`Updated access for ${matched.length} user(s).`);
+      await load();
+    } catch (error) {
+      setStatus(`Bulk access update failed: ${error.message}`);
+    }
+  };
+  return (
+    <form className="bulk-access" onSubmit={submit}>
+      <div className="bulk-access-grid">
+        <label>Match users<input value={form.filter} onChange={(e) => setForm({ ...form, filter: e.target.value })} placeholder="alpha, team name, role name, or blank for all" /></label>
+        <label>Role<select value={form.role_id} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
+          <option value="">Leave role unchanged</option>
+          {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+        </select></label>
+        <label>Group mode<select value={form.group_mode} onChange={(e) => setForm({ ...form, group_mode: e.target.value })}>
+          <option value="replace">Replace groups</option>
+          <option value="add">Add groups</option>
+          <option value="remove">Remove groups</option>
+        </select></label>
+        <button className="btn primary" type="submit"><ShieldCheck size={16} />Apply to {matched.length}</button>
+      </div>
+      <div className="group-picks">
+        {groups.length ? groups.map((group) => (
+          <label className="check group-chip" key={group.id}>
+            <input type="checkbox" checked={form.group_ids.includes(group.id)} onChange={() => toggleGroup(group.id)} />
+            <span className="color-dot" style={{ background: group.color || '#64c18c' }} /> {group.name}
+          </label>
+        )) : <span className="hint">Create groups before bulk assigning users.</span>}
+      </div>
+      <div className="matched-users">
+        {matched.slice(0, 12).map((user) => <Badge key={user.id}>{user.username}</Badge>)}
+        {matched.length > 12 && <Badge>{matched.length - 12} more</Badge>}
+      </div>
+    </form>
+  );
+}
+
+function GroupLinks({ groups, links, session, load, setStatus }) {
+  if (groups.length < 2) return <Empty title="Need at least two groups" detail="Create groups first, then link which groups can see or send to other groups." />;
+  const findLink = (sourceId, targetId) => links.find((link) => link.source_group_id === sourceId && link.target_group_id === targetId) || {};
+  const update = async (sourceId, targetId, patch) => {
+    const current = findLink(sourceId, targetId);
+    try {
+      await api('/api/access-links/set', session, {
+        method: 'POST',
+        body: JSON.stringify({
+          source_group_id: sourceId,
+          target_group_id: targetId,
+          can_see: Boolean(current.can_see),
+          can_send: Boolean(current.can_send),
+          ...patch,
+        }),
+      });
+      setStatus('Group link updated.');
+      await load();
+    } catch (error) {
+      setStatus(`Group link update failed: ${error.message}`);
+    }
+  };
+  return (
+    <div className="table-wrap">
+      <table className="link-matrix">
+        <thead>
+          <tr>
+            <th>Source group</th>
+            {groups.map((group) => <th key={group.id}>{group.name}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((source) => (
+            <tr key={source.id}>
+              <td><strong><span className="color-dot" style={{ background: source.color || '#64c18c' }} />{source.name}</strong></td>
+              {groups.map((target) => {
+                const link = findLink(source.id, target.id);
+                const same = source.id === target.id;
+                return (
+                  <td key={target.id}>
+                    {same ? <span className="hint">own group</span> : (
+                      <div className="link-checks">
+                        <label className="check"><input type="checkbox" checked={Boolean(link.can_see)} onChange={(e) => update(source.id, target.id, { can_see: e.target.checked })} /> See</label>
+                        <label className="check"><input type="checkbox" checked={Boolean(link.can_send)} onChange={(e) => update(source.id, target.id, { can_send: e.target.checked })} /> Send</label>
+                      </div>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
