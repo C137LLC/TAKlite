@@ -431,6 +431,16 @@ nav {
   background: rgba(255, 255, 255, 0.018);
 }
 
+.panel-hint {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(100, 193, 140, 0.035);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -911,7 +921,7 @@ select {
   }
 
   nav {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
     margin-top: 14px;
   }
 

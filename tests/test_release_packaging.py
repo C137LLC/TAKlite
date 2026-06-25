@@ -19,10 +19,18 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT: \"${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT:-true}\"", compose)
         self.assertIn("TAKLITE_ALLOW_LEGACY_CLIENT_CERT: \"${TAKLITE_ALLOW_LEGACY_CLIENT_CERT:-false}\"", compose)
         self.assertIn("TAKLITE_ACCESS_CONTROL_ENFORCE: \"${TAKLITE_ACCESS_CONTROL_ENFORCE:-true}\"", compose)
+        self.assertIn("TAKLITE_GUI_UPDATE_ENABLED: \"${TAKLITE_GUI_UPDATE_ENABLED:-false}\"", compose)
         self.assertIn("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=true", env_example)
         self.assertIn("TAKLITE_ALLOW_LEGACY_CLIENT_CERT=false", env_example)
         self.assertIn("TAKLITE_ACCESS_CONTROL_ENFORCE=true", env_example)
+        self.assertIn("TAKLITE_GUI_UPDATE_ENABLED=false", env_example)
         self.assertIn('prompt_default "Enable secure mode: require TLS cert identity and enforce groups" "yes"', installer)
+        self.assertIn("TAKLITE_GUI_UPDATE_ENABLED=false", installer)
+
+        service = (ROOT / "docker" / "taklite" / "taklite_service.py").read_text()
+        self.assertIn('TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "true"', service)
+        self.assertIn('TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "false"', service)
+        self.assertIn('TAKLITE_ACCESS_CONTROL_ENFORCE", "true"', service)
 
 
 if __name__ == "__main__":

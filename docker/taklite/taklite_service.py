@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -51,13 +52,17 @@ MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
 COT_MAX_BUFFER_BYTES = int(os.environ.get("TAKLITE_COT_MAX_BUFFER_BYTES", str(1024 * 1024)))
 EVENT_RETENTION_ROWS = int(os.environ.get("TAKLITE_EVENT_RETENTION_ROWS", "50000"))
-COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "false").lower() in ("1", "true", "yes", "on")
-ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
-ACCESS_CONTROL_ENFORCE = os.environ.get("TAKLITE_ACCESS_CONTROL_ENFORCE", "false").lower() in ("1", "true", "yes", "on")
+COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
+ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "false").lower() in ("1", "true", "yes", "on")
+ACCESS_CONTROL_ENFORCE = os.environ.get("TAKLITE_ACCESS_CONTROL_ENFORCE", "true").lower() in ("1", "true", "yes", "on")
 LOGIN_LIMIT_ATTEMPTS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_ATTEMPTS", "8"))
 LOGIN_LIMIT_WINDOW_SECONDS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_WINDOW_SECONDS", "300"))
 MAX_BULK_USERS = int(os.environ.get("TAKLITE_MAX_BULK_USERS", "100"))
 SOCKET_SEND_TIMEOUT_SECONDS = float(os.environ.get("TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS", "2.5"))
+GUI_UPDATE_ENABLED = os.environ.get("TAKLITE_GUI_UPDATE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+GUI_UPDATE_COMMAND = os.environ.get("TAKLITE_GUI_UPDATE_COMMAND", "")
+GUI_UPDATE_WORKDIR = os.environ.get("TAKLITE_GUI_UPDATE_WORKDIR", "")
+GUI_UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TAKLITE_GUI_UPDATE_TIMEOUT_SECONDS", "900"))
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
@@ -1717,9 +1722,19 @@ def dir_size(path):
     if not path.exists():
         return 0
     for item in path.rglob("*"):
-        if item.is_file():
-            total += item.stat().st_size
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
+
+
+def file_size(path):
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
 
 
 def runtime_health():
@@ -1734,7 +1749,7 @@ def runtime_health():
         db_ok = True
     except Exception as exc:
         db_error = str(exc)
-    db_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    db_size = file_size(DB_PATH)
     wal_path = DB_PATH.with_name(DB_PATH.name + "-wal")
     return {
         "version": VERSION,
@@ -1742,7 +1757,7 @@ def runtime_health():
             "ok": db_ok,
             "path": str(DB_PATH),
             "bytes": db_size,
-            "wal_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+            "wal_bytes": file_size(wal_path),
             "counts": counts,
             "error": db_error,
         },
@@ -1785,11 +1800,61 @@ def runtime_health():
             "visible_from_container": False,
         },
         "updates": {
-            "gui_runner_enabled": False,
+            **gui_update_status(),
             "release_url": "https://github.com/C137LLC/TAKlite/releases",
             "repo_url": "https://github.com/C137LLC/TAKlite.git",
             "preserves": [".env", "taklite/data", "taklite/certs", "taklite/packages", "/etc/wireguard", "/root/taklite-admin", "WGDashboard config"],
         },
+    }
+
+
+def gui_update_status():
+    return {
+        "gui_runner_enabled": GUI_UPDATE_ENABLED and bool(GUI_UPDATE_COMMAND.strip()),
+        "enabled": GUI_UPDATE_ENABLED and bool(GUI_UPDATE_COMMAND.strip()),
+        "configured": bool(GUI_UPDATE_COMMAND.strip()),
+        "workdir": GUI_UPDATE_WORKDIR,
+        "timeout_seconds": GUI_UPDATE_TIMEOUT_SECONDS,
+    }
+
+
+def run_gui_update(confirm):
+    if not GUI_UPDATE_ENABLED:
+        return {"ok": False, "error": "GUI update runner is disabled"}
+    if not GUI_UPDATE_COMMAND.strip():
+        return {"ok": False, "error": "GUI update command is not configured"}
+    if confirm != "RUN_UPDATE":
+        return {"ok": False, "error": "update confirmation is required"}
+    workdir = Path(GUI_UPDATE_WORKDIR) if GUI_UPDATE_WORKDIR else None
+    if workdir and not workdir.is_dir():
+        return {"ok": False, "error": f"GUI update workdir does not exist: {workdir}"}
+    started = utc_now()
+    try:
+        result = subprocess.run(
+            shlex.split(GUI_UPDATE_COMMAND),
+            cwd=str(workdir) if workdir else None,
+            capture_output=True,
+            text=True,
+            timeout=GUI_UPDATE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error": f"GUI update timed out after {GUI_UPDATE_TIMEOUT_SECONDS} seconds",
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "",
+            "started_at": started,
+            "finished_at": utc_now(),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "started_at": started, "finished_at": utc_now()}
+    return {
+        "ok": result.returncode == 0,
+        "returncode": result.returncode,
+        "stdout": result.stdout[-12000:],
+        "stderr": result.stderr[-12000:],
+        "started_at": started,
+        "finished_at": utc_now(),
     }
 
 
@@ -2328,6 +2393,13 @@ class HttpHandler(BaseHTTPRequestHandler):
                 portal_logout(self.headers.get("X-Portal-Token", ""))
                 self.send_json({"ok": True})
                 return
+            if path == "/api/admin/update/run":
+                if not self.require_auth():
+                    return
+                payload = self.read_json()
+                result = run_gui_update(payload.get("confirm", ""))
+                self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
             if path in ("/Marti/sync/missionupload", "/sync/missionupload", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/content", "/sync/content"):
                 upload_datapackage_from_request(self, qs)
                 return
@@ -2627,7 +2699,10 @@ def main():
         https_server = ThreadingHTTPServer((HTTPS_BIND, HTTPS_PORT), HttpHandler)
         https_server.socket = https_context.wrap_socket(https_server.socket, server_side=True)
         threading.Thread(target=https_server.serve_forever, daemon=True).start()
-        client_cert_mode = "client cert optional/verified" if CLIENT_CA.exists() else "client cert not verified; CA missing"
+        if CLIENT_CA.exists():
+            client_cert_mode = "client cert required/verified" if COT_TLS_REQUIRE_CLIENT_CERT else "client cert optional/verified"
+        else:
+            client_cert_mode = "client cert required; CA missing" if COT_TLS_REQUIRE_CLIENT_CERT else "client cert not verified; CA missing"
         print(f"TAKlite TLS CoT listening on {COT_TLS_BIND}:{COT_TLS_PORT} ({client_cert_mode})")
         print(f"TAKlite HTTPS/Marti listening on {HTTPS_BIND}:{HTTPS_PORT}")
     else:

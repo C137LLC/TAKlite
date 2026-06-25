@@ -231,7 +231,7 @@ function App() {
         </div>
         <nav>
           {navItems.map(([key, Icon, label]) => (
-            <button key={key} className={active === key ? 'nav-item active' : 'nav-item'} onClick={() => setActive(key)}>
+            <button key={key} className={active === key ? 'nav-item active' : 'nav-item'} onClick={() => setActive(key)} aria-label={label} title={label}>
               <Icon size={17} />
               <span>{label}</span>
             </button>
@@ -276,7 +276,7 @@ function App() {
         {active === 'users' && <UsersPanel users={data.portalUsers} access={data.access} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
         {active === 'packages' && <ProfilesPanel profiles={data.profiles} certPassword={data.certPassword} session={session} load={load} setStatus={setStatus} />}
         {active === 'access' && <AccessPanel users={data.portalUsers} access={data.access} session={session} load={load} setStatus={setStatus} />}
-        {active === 'settings' && <SettingsPanel health={data.systemHealth} wgUrl={wgUrl} setStatus={setStatus} />}
+        {active === 'settings' && <SettingsPanel health={data.systemHealth} wgUrl={wgUrl} session={session} load={load} setStatus={setStatus} />}
       </main>
     </div>
   );
@@ -423,7 +423,8 @@ function HealthPanel({ health }) {
   );
 }
 
-function SettingsPanel({ health, wgUrl, setStatus }) {
+function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
+  const [updating, setUpdating] = useState(false);
   if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
   const connections = health.connections || {};
   const config = health.config || {};
@@ -442,6 +443,23 @@ cd /root/taklite || cd /root/TAKlite
   const copy = async (text, message) => {
     await navigator.clipboard.writeText(text);
     setStatus(message);
+  };
+  const runUpdate = async () => {
+    if (!updates.gui_runner_enabled) return;
+    if (!confirm('Run the configured TAKlite update command now? The updater should create a backup and preserve local data.')) return;
+    setUpdating(true);
+    try {
+      const result = await api('/api/admin/update/run', session, {
+        method: 'POST',
+        body: JSON.stringify({ confirm: 'RUN_UPDATE' }),
+      });
+      setStatus(`Update finished with code ${result.returncode ?? 0}.`);
+      await load();
+    } catch (error) {
+      setStatus(`Update failed: ${error.message}`);
+    } finally {
+      setUpdating(false);
+    }
   };
 
   return (
@@ -508,9 +526,9 @@ cd /root/taklite || cd /root/TAKlite
               <Copy size={16} />
               Copy Zip Update
             </button>
-            <button className="btn primary" disabled title="Host-level GUI update runner is intentionally disabled by default.">
-              <RotateCw size={16} />
-              Run Update
+            <button className="btn primary" disabled={!updates.gui_runner_enabled || updating} onClick={runUpdate} title={updates.gui_runner_enabled ? 'Run the configured update command.' : 'Enable TAKLITE_GUI_UPDATE_ENABLED and TAKLITE_GUI_UPDATE_COMMAND to allow GUI updates.'}>
+              <RotateCw size={16} className={updating ? 'spin' : ''} />
+              {updating ? 'Updating' : 'Run Update'}
             </button>
           </div>
           <div className="code-block">
@@ -549,6 +567,10 @@ function Panel({ title, icon: Icon, children, wide = false, actions = null }) {
       {children}
     </section>
   );
+}
+
+function PanelHint({ children }) {
+  return <div className="panel-hint">{children}</div>;
 }
 
 function ClientsPanel({ clients }) {
@@ -839,21 +861,26 @@ function AccessPanel({ users, access, session, load, setStatus }) {
   const links = access?.links || [];
   return (
     <div className="dashboard-grid">
-      <Panel title="Assign Users to Roles / Groups" icon={UserPlus} wide>
+      <Panel title="User Membership" icon={UserPlus} wide>
+        <PanelHint>Choose each user&apos;s role and group membership. Roles define broad permissions; groups define who users can see by default.</PanelHint>
         <UserAccessTable users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>
-      <Panel title="Assign Selected Users" icon={Users} wide>
+      <Panel title="Bulk Membership" icon={Users} wide>
+        <PanelHint>Select multiple users, then apply one role or group change to the whole selection.</PanelHint>
         <BulkAccess users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>
-      <Panel title="Roles" icon={ShieldCheck}>
+      <Panel title="Role Permissions" icon={ShieldCheck}>
+        <PanelHint>Use roles for permission levels. An admin-style role can see everyone without being visible to everyone else.</PanelHint>
         <CreateRole session={session} load={load} setStatus={setStatus} />
         <RolesTable roles={roles} session={session} load={load} setStatus={setStatus} />
       </Panel>
       <Panel title="Groups" icon={Users}>
+        <PanelHint>Use groups for teams or visibility buckets such as Alpha, Bravo, Admin, or Rabbit.</PanelHint>
         <CreateGroup session={session} load={load} setStatus={setStatus} />
         <GroupsTable groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>
-      <Panel title="Cross-Group Access" icon={Link2} wide>
+      <Panel title="Visibility Links" icon={Link2} wide>
+        <PanelHint>Link groups only when one group should see and send to another. No link means groups stay isolated unless a role has see-all/send-all.</PanelHint>
         <GroupLinks groups={groups} links={links} session={session} load={load} setStatus={setStatus} />
       </Panel>
     </div>
@@ -885,10 +912,10 @@ function CreateRole({ session, load, setStatus }) {
       <label>Role name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Supervisor" /></label>
       <label>Description<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional note" /></label>
       <div className="check-row">
-        <label className="check"><input type="checkbox" checked={form.can_see_all} onChange={(e) => setForm({ ...form, can_see_all: e.target.checked })} /> See all</label>
-        <label className="check"><input type="checkbox" checked={form.can_send_all} onChange={(e) => setForm({ ...form, can_send_all: e.target.checked })} /> Send all</label>
-        <label className="check"><input type="checkbox" checked={form.can_see_own_groups} onChange={(e) => setForm({ ...form, can_see_own_groups: e.target.checked })} /> See own groups</label>
-        <label className="check"><input type="checkbox" checked={form.can_send_own_groups} onChange={(e) => setForm({ ...form, can_send_own_groups: e.target.checked })} /> Send own groups</label>
+        <label className="check"><input type="checkbox" checked={form.can_see_all} onChange={(e) => setForm({ ...form, can_see_all: e.target.checked })} /> Can see everyone</label>
+        <label className="check"><input type="checkbox" checked={form.can_send_all} onChange={(e) => setForm({ ...form, can_send_all: e.target.checked })} /> Can send to everyone</label>
+        <label className="check"><input type="checkbox" checked={form.can_see_own_groups} onChange={(e) => setForm({ ...form, can_see_own_groups: e.target.checked })} /> Can see assigned groups</label>
+        <label className="check"><input type="checkbox" checked={form.can_send_own_groups} onChange={(e) => setForm({ ...form, can_send_own_groups: e.target.checked })} /> Can send to assigned groups</label>
       </div>
       <button className="btn primary" type="submit"><ShieldCheck size={16} />Create Role</button>
     </form>
@@ -916,10 +943,10 @@ function RolesTable({ roles, session, load, setStatus }) {
               <td><strong>{role.name}</strong><span>{role.description || '-'}</span></td>
               <td>
                 <div className="check-row compact">
-                  <label className="check"><input type="checkbox" checked={role.can_see_all} onChange={(e) => updateRole(role, { can_see_all: e.target.checked })} /> See all</label>
-                  <label className="check"><input type="checkbox" checked={role.can_send_all} onChange={(e) => updateRole(role, { can_send_all: e.target.checked })} /> Send all</label>
-                  <label className="check"><input type="checkbox" checked={role.can_see_own_groups} onChange={(e) => updateRole(role, { can_see_own_groups: e.target.checked })} /> See own</label>
-                  <label className="check"><input type="checkbox" checked={role.can_send_own_groups} onChange={(e) => updateRole(role, { can_send_own_groups: e.target.checked })} /> Send own</label>
+                  <label className="check"><input type="checkbox" checked={role.can_see_all} onChange={(e) => updateRole(role, { can_see_all: e.target.checked })} /> See everyone</label>
+                  <label className="check"><input type="checkbox" checked={role.can_send_all} onChange={(e) => updateRole(role, { can_send_all: e.target.checked })} /> Send everyone</label>
+                  <label className="check"><input type="checkbox" checked={role.can_see_own_groups} onChange={(e) => updateRole(role, { can_see_own_groups: e.target.checked })} /> See assigned</label>
+                  <label className="check"><input type="checkbox" checked={role.can_send_own_groups} onChange={(e) => updateRole(role, { can_send_own_groups: e.target.checked })} /> Send assigned</label>
                 </div>
               </td>
               <td>
@@ -1051,12 +1078,12 @@ function BulkAccess({ users, roles, groups, session, load, setStatus }) {
           <option value="">Leave role unchanged</option>
           {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
         </select></label>
-        <label>Group mode<select value={form.group_mode} onChange={(e) => setForm({ ...form, group_mode: e.target.value })}>
+        <label>Group action<select value={form.group_mode} onChange={(e) => setForm({ ...form, group_mode: e.target.value })}>
           <option value="replace">Replace groups</option>
           <option value="add">Add groups</option>
           <option value="remove">Remove groups</option>
         </select></label>
-        <button className="btn primary" type="submit"><ShieldCheck size={16} />Apply to {selectedUsers.length}</button>
+        <button className="btn primary" type="submit"><ShieldCheck size={16} />Apply Policy to {selectedUsers.length}</button>
       </div>
       <div className="selection-toolbar">
         <span className="hint">{selectedUsers.length} selected, {matched.length} visible</span>
