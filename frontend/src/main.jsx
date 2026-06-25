@@ -425,35 +425,65 @@ function HealthPanel({ health }) {
 
 function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
   const [updating, setUpdating] = useState(false);
-  if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
-  const connections = health.connections || {};
-  const config = health.config || {};
-  const runtime = health.runtime || {};
-  const security = health.security || {};
-  const updates = health.updates || {};
-  const gitCommand = `cd /root
-rm -rf /root/TAKlite-update
-git clone https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
-
-cd /root/taklite || cd /root/TAKlite
-./update.sh --from-dir /root/TAKlite-update --app-dir "$PWD"`;
-  const zipCommand = `cd /root/taklite || cd /root/TAKlite
-./update.sh /root/TAKlite-v0.2.13.zip`;
-
-  const copy = async (text, message) => {
-    await navigator.clipboard.writeText(text);
-    setStatus(message);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState(null);
+  const connections = health?.connections || {};
+  const config = health?.config || {};
+  const security = health?.security || {};
+  const updates = health?.updates || {};
+  const healthVersion = health?.version || '';
+  const mergedUpdate = { ...updates, ...(updateStatus || {}) };
+  const checkUpdate = async (refresh = false) => {
+    setCheckingUpdate(true);
+    try {
+      const result = await api(`/api/admin/update/status${refresh ? '?refresh=1' : ''}`, session);
+      setUpdateStatus(result);
+      return result;
+    } catch (error) {
+      const failed = { check_error: error.message, update_available: false, ...updates };
+      setUpdateStatus(failed);
+      return failed;
+    } finally {
+      setCheckingUpdate(false);
+    }
   };
+
+  useEffect(() => {
+    if (!health) return undefined;
+    let cancelled = false;
+    async function loadUpdateStatus() {
+      setCheckingUpdate(true);
+      try {
+        const result = await api('/api/admin/update/status', session);
+        if (!cancelled) setUpdateStatus(result);
+      } catch (error) {
+        if (!cancelled) setUpdateStatus({ check_error: error.message, update_available: false, ...updates });
+      } finally {
+        if (!cancelled) setCheckingUpdate(false);
+      }
+    }
+    loadUpdateStatus();
+    return () => { cancelled = true; };
+  }, [healthVersion, session]);
+
   const runUpdate = async () => {
-    if (!updates.gui_runner_enabled) return;
+    const latest = await checkUpdate(true);
+    if (!latest.update_available) {
+      setStatus(latest.check_error ? `Could not check for updates: ${latest.check_error}` : 'TAKlite is up to date.');
+      return;
+    }
+    if (!latest.gui_runner_enabled) {
+      setStatus('Update available, but the GUI updater is not enabled on this server yet.');
+      return;
+    }
     if (!confirm('Run the configured TAKlite update command now? The updater should create a backup and preserve local data.')) return;
     setUpdating(true);
     try {
       const result = await api('/api/admin/update/run', session, {
         method: 'POST',
-        body: JSON.stringify({ confirm: 'RUN_UPDATE' }),
+        body: JSON.stringify({ confirm: 'RUN_UPDATE', target_tag: latest.latest_tag || '' }),
       });
-      setStatus(`Update finished with code ${result.returncode ?? 0}.`);
+      setStatus(result.queued ? 'Update requested. TAKlite will restart when the host runner applies it.' : `Update finished with code ${result.returncode ?? 0}.`);
       await load();
     } catch (error) {
       setStatus(`Update failed: ${error.message}`);
@@ -461,37 +491,40 @@ cd /root/taklite || cd /root/TAKlite
       setUpdating(false);
     }
   };
+  const updateLabel = updating ? 'Updating' : checkingUpdate ? 'Checking' : mergedUpdate.update_available ? 'Update TAKlite' : 'Check for Update';
+  const updateStatusText = mergedUpdate.check_error
+    ? 'Unable to check'
+    : mergedUpdate.latest_tag
+      ? mergedUpdate.update_available ? `${mergedUpdate.latest_tag} available` : 'Up to date'
+      : 'Not checked';
+
+  if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
 
   return (
     <div className="dashboard-grid">
-      <Panel title="Server" icon={Gauge}>
-        <div className="health-grid">
-          <HealthMetric label="Version" value={health.version || '-'} />
-          <HealthMetric label="Uptime" value={fmtDuration(runtime.uptime_seconds)} />
-          <HealthMetric label="Host" value={config.public_host || config.server_host || '-'} />
-          <HealthMetric label="Container" value={runtime.container_status || '-'} tone={runtime.container_status === 'running' ? 'good' : 'warn'} />
-          <HealthMetric label="HTTP / HTTPS" value={`${connections.http_port || '-'} / ${connections.https_port || '-'}`} />
-          <HealthMetric label="CoT / TLS CoT" value={`${connections.cot_port || '-'} / ${connections.cot_tls_port || '-'}`} />
-          <HealthMetric label="Max Upload" value={fmtBytes(config.max_upload_bytes || 0)} />
-          <HealthMetric label="Started" value={fmtTime(runtime.started_at)} />
+      <Panel title="Server Configuration" icon={Gauge}>
+        <div className="settings-list">
+          <SettingsItem label="Public Host" value={config.public_host || config.server_host || '-'} detail="Used in generated ATAK / WinTAK connection packages." />
+          <SettingsItem label="Admin HTTP Port" value={connections.http_port || '-'} detail="Dashboard and client portal." />
+          <SettingsItem label="TAK HTTPS Port" value={connections.https_port || '-'} detail="Datapackage and Marti-compatible HTTPS endpoints." />
+          <SettingsItem label="CoT TCP Port" value={connections.cot_port || '-'} detail="Plain TCP CoT relay." />
+          <SettingsItem label="TLS CoT Port" value={connections.cot_tls_port || '-'} detail="Certificate-backed CoT relay for ATAK / WinTAK." />
+          <SettingsItem label="Max Upload Size" value={fmtBytes(config.max_upload_bytes || 0)} detail="Largest datapackage TAKlite will accept." />
         </div>
       </Panel>
 
-      <Panel title="Security" icon={ShieldCheck}>
-        <div className="health-grid">
-          <HealthMetric label="Access Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} />
-          <HealthMetric label="TLS Client Cert" value={security.cot_tls_require_client_cert ? 'Required' : 'Optional'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} />
-          <HealthMetric label="Legacy Shared CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} />
-          <HealthMetric label="Admin Auth" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} />
+      <Panel title="Security Configuration" icon={ShieldCheck}>
+        <div className="settings-list">
+          <SettingsItem label="Access Policy Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} detail="Applies role and group visibility rules to CoT and datapackages." />
+          <SettingsItem label="TLS Client Certificates" value={security.cot_tls_require_client_cert ? 'Required' : 'Optional'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} detail="Requires per-user certificates for TLS CoT connections." />
+          <SettingsItem label="Legacy Shared Cert CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} detail="Blocks old shared-cert identities when disabled." />
+          <SettingsItem label="Admin Authentication" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} detail="Admin dashboard requires login after bootstrap." />
         </div>
       </Panel>
 
       <Panel title="WireGuard" icon={Wifi}>
         <div className="settings-stack">
-          <div className="health-grid">
-            <HealthMetric label="Dashboard" value={wgUrl || health.wireguard?.dashboard_url || '-'} />
-            <HealthMetric label="VPN Health" value="Planned" />
-          </div>
+          <SettingsItem label="Dashboard URL" value={wgUrl || health.wireguard?.dashboard_url || '-'} detail="Opens the WireGuard dashboard for peer management." />
           {wgUrl || health.wireguard?.dashboard_url ? (
             <a className="btn ghost settings-action" href={wgUrl || health.wireguard.dashboard_url} target="_blank" rel="noreferrer">
               <ExternalLink size={16} />
@@ -501,46 +534,37 @@ cd /root/taklite || cd /root/TAKlite
         </div>
       </Panel>
 
-      <Panel title="Updates" icon={RotateCw} wide>
+      <Panel title="Updates" icon={RotateCw}>
         <div className="settings-stack">
           <div className="settings-note">
             Updates preserve <code>.env</code>, TAKlite data, certificates, packages, WireGuard, the admin peer, and WGDashboard config.
           </div>
-          <div className="health-grid wide">
-            <HealthMetric label="Current Version" value={health.version || '-'} />
-            <HealthMetric label="GUI Runner" value={updates.gui_runner_enabled ? 'Enabled' : 'Disabled'} tone={updates.gui_runner_enabled ? 'good' : 'neutral'} />
-            <HealthMetric label="Backup" value="Created before update" />
-            <HealthMetric label="Release Source" value="GitHub" />
-            <HealthMetric label="Zip Update" value="Supported by CLI" />
+          <div className="settings-list compact">
+            <SettingsItem label="Current Version" value={health.version || '-'} />
+            <SettingsItem label="Latest Release" value={mergedUpdate.latest_tag || '-'} />
+            <SettingsItem label="Update Status" value={updateStatusText} tone={mergedUpdate.update_available ? 'warn' : mergedUpdate.check_error ? 'bad' : 'good'} detail={mergedUpdate.check_error || ''} />
+            <SettingsItem label="GUI Update Runner" value={mergedUpdate.gui_runner_enabled ? 'Enabled' : 'Not Enabled'} tone={mergedUpdate.gui_runner_enabled ? 'good' : 'neutral'} />
           </div>
           <div className="settings-actions">
-            <a className="btn ghost" href={updates.release_url || 'https://github.com/C137LLC/TAKlite/releases'} target="_blank" rel="noreferrer">
-              <ExternalLink size={16} />
-              Check Latest Release
-            </a>
-            <button className="btn ghost" onClick={() => copy(gitCommand, 'GitHub update command copied.')}>
-              <Copy size={16} />
-              Copy GitHub Update
+            <button className="btn primary" disabled={updating || checkingUpdate} onClick={runUpdate}>
+              <RotateCw size={16} className={updating || checkingUpdate ? 'spin' : ''} />
+              {updateLabel}
             </button>
-            <button className="btn ghost" onClick={() => copy(zipCommand, 'Zip update command copied.')}>
-              <Copy size={16} />
-              Copy Zip Update
-            </button>
-            <button className="btn primary" disabled={!updates.gui_runner_enabled || updating} onClick={runUpdate} title={updates.gui_runner_enabled ? 'Run the configured update command.' : 'Enable TAKLITE_GUI_UPDATE_ENABLED and TAKLITE_GUI_UPDATE_COMMAND to allow GUI updates.'}>
-              <RotateCw size={16} className={updating ? 'spin' : ''} />
-              {updating ? 'Updating' : 'Run Update'}
-            </button>
-          </div>
-          <div className="code-block">
-            <div className="mini-label">GitHub update command</div>
-            <pre>{gitCommand}</pre>
-          </div>
-          <div className="code-block">
-            <div className="mini-label">Zip update command</div>
-            <pre>{zipCommand}</pre>
           </div>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function SettingsItem({ label, value, detail = '', tone = 'neutral' }) {
+  return (
+    <div className={`settings-item ${tone}`}>
+      <div>
+        <span>{label}</span>
+        {detail ? <p>{detail}</p> : null}
+      </div>
+      <strong>{value}</strong>
     </div>
   );
 }

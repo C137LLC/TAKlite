@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn, TCPServer, BaseRequestHandler
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.request import Request, urlopen
 
 HTTP_BIND = os.environ.get("TAKLITE_HTTP_BIND", "0.0.0.0")
 HTTP_PORT = int(os.environ.get("TAKLITE_HTTP_PORT", "8080"))
@@ -63,6 +64,11 @@ GUI_UPDATE_ENABLED = os.environ.get("TAKLITE_GUI_UPDATE_ENABLED", "false").lower
 GUI_UPDATE_COMMAND = os.environ.get("TAKLITE_GUI_UPDATE_COMMAND", "")
 GUI_UPDATE_WORKDIR = os.environ.get("TAKLITE_GUI_UPDATE_WORKDIR", "")
 GUI_UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TAKLITE_GUI_UPDATE_TIMEOUT_SECONDS", "900"))
+GUI_UPDATE_REQUEST_DIR = os.environ.get("TAKLITE_GUI_UPDATE_REQUEST_DIR", "")
+RELEASES_URL = "https://github.com/C137LLC/TAKlite/releases"
+LATEST_RELEASE_API_URL = "https://api.github.com/repos/C137LLC/TAKlite/releases/latest"
+UPDATE_STATUS_CACHE = {"checked_at": 0, "status": None}
+UPDATE_STATUS_CACHE_SECONDS = 300
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
@@ -77,6 +83,18 @@ BULK_PORTAL_PASSWORD = "atakatak"
 
 def utc_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def version_tuple(value):
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value or "")
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.groups())
+
+
+def version_tag(value):
+    parts = version_tuple(value)
+    return f"v{'.'.join(str(part) for part in parts)}" if parts else ""
 
 
 def ensure_dirs():
@@ -1737,6 +1755,13 @@ def file_size(path):
         return 0
 
 
+def read_json_file(path):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
 def runtime_health():
     db_ok = False
     db_error = ""
@@ -1801,7 +1826,7 @@ def runtime_health():
         },
         "updates": {
             **gui_update_status(),
-            "release_url": "https://github.com/C137LLC/TAKlite/releases",
+            "release_url": RELEASES_URL,
             "repo_url": "https://github.com/C137LLC/TAKlite.git",
             "preserves": [".env", "taklite/data", "taklite/certs", "taklite/packages", "/etc/wireguard", "/root/taklite-admin", "WGDashboard config"],
         },
@@ -1809,22 +1834,85 @@ def runtime_health():
 
 
 def gui_update_status():
+    request_dir = Path(GUI_UPDATE_REQUEST_DIR) if GUI_UPDATE_REQUEST_DIR else None
+    request_runner = bool(request_dir and request_dir.is_dir())
+    command_runner = bool(GUI_UPDATE_COMMAND.strip())
+    last_status = read_json_file(request_dir / "status.json") if request_dir else None
+    pending = bool(request_dir and (request_dir / "request.json").exists())
+    processing = bool(request_dir and (request_dir / "processing.json").exists())
     return {
-        "gui_runner_enabled": GUI_UPDATE_ENABLED and bool(GUI_UPDATE_COMMAND.strip()),
-        "enabled": GUI_UPDATE_ENABLED and bool(GUI_UPDATE_COMMAND.strip()),
-        "configured": bool(GUI_UPDATE_COMMAND.strip()),
+        "gui_runner_enabled": GUI_UPDATE_ENABLED and (request_runner or command_runner),
+        "enabled": GUI_UPDATE_ENABLED and (request_runner or command_runner),
+        "configured": request_runner or command_runner,
+        "runner_mode": "request" if request_runner else "command" if command_runner else "disabled",
         "workdir": GUI_UPDATE_WORKDIR,
+        "request_dir": GUI_UPDATE_REQUEST_DIR,
         "timeout_seconds": GUI_UPDATE_TIMEOUT_SECONDS,
+        "pending": pending,
+        "processing": processing,
+        "last_status": last_status,
     }
 
 
-def run_gui_update(confirm):
+def latest_release_status(refresh=False):
+    now = time.time()
+    if not refresh and UPDATE_STATUS_CACHE["status"] and now - UPDATE_STATUS_CACHE["checked_at"] < UPDATE_STATUS_CACHE_SECONDS:
+        return UPDATE_STATUS_CACHE["status"]
+    current_parts = version_tuple(VERSION)
+    current_tag = version_tag(VERSION)
+    status = {
+        "current_version": VERSION,
+        "current_tag": current_tag,
+        "latest_tag": "",
+        "latest_version": "",
+        "update_available": False,
+        "release_url": RELEASES_URL,
+        "checked_at": utc_now(),
+        "check_error": "",
+        **gui_update_status(),
+    }
+    try:
+        req = Request(LATEST_RELEASE_API_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "TAKlite"})
+        with urlopen(req, timeout=4) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        latest_tag = payload.get("tag_name", "")
+        latest_parts = version_tuple(latest_tag)
+        status.update({
+            "latest_tag": latest_tag,
+            "latest_version": latest_tag.lstrip("v"),
+            "release_url": payload.get("html_url") or RELEASES_URL,
+            "update_available": bool(latest_parts and current_parts and latest_parts > current_parts),
+        })
+    except Exception as exc:
+        status["check_error"] = str(exc)
+    UPDATE_STATUS_CACHE["checked_at"] = now
+    UPDATE_STATUS_CACHE["status"] = status
+    return status
+
+
+def run_gui_update(confirm, target_tag=""):
     if not GUI_UPDATE_ENABLED:
         return {"ok": False, "error": "GUI update runner is disabled"}
-    if not GUI_UPDATE_COMMAND.strip():
-        return {"ok": False, "error": "GUI update command is not configured"}
     if confirm != "RUN_UPDATE":
         return {"ok": False, "error": "update confirmation is required"}
+    request_dir = Path(GUI_UPDATE_REQUEST_DIR) if GUI_UPDATE_REQUEST_DIR else None
+    if request_dir and request_dir.is_dir():
+        request_file = request_dir / "request.json"
+        processing_file = request_dir / "processing.json"
+        if request_file.exists() or processing_file.exists():
+            return {"ok": False, "error": "an update is already pending or running"}
+        request = {
+            "id": secrets.token_urlsafe(12),
+            "requested_at": utc_now(),
+            "current_version": VERSION,
+            "target_tag": target_tag,
+        }
+        tmp_file = request_dir / f".request-{request['id']}.tmp"
+        tmp_file.write_text(json.dumps(request, indent=2))
+        tmp_file.replace(request_file)
+        return {"ok": True, "queued": True, "request": request}
+    if not GUI_UPDATE_COMMAND.strip():
+        return {"ok": False, "error": "GUI update command is not configured"}
     workdir = Path(GUI_UPDATE_WORKDIR) if GUI_UPDATE_WORKDIR else None
     if workdir and not workdir.is_dir():
         return {"ok": False, "error": f"GUI update workdir does not exist: {workdir}"}
@@ -2267,6 +2355,11 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(runtime_health())
             return
+        if path == "/api/admin/update/status":
+            if not self.require_auth():
+                return
+            self.send_json(latest_release_status(refresh=qs.get("refresh", ["0"])[0] in ("1", "true", "yes")))
+            return
         if path == "/api/ui-config":
             self.send_json({"wgDashboardUrl": WG_DASHBOARD_URL})
             return
@@ -2397,7 +2490,7 @@ class HttpHandler(BaseHTTPRequestHandler):
                 if not self.require_auth():
                     return
                 payload = self.read_json()
-                result = run_gui_update(payload.get("confirm", ""))
+                result = run_gui_update(payload.get("confirm", ""), payload.get("target_tag", ""))
                 self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
             if path in ("/Marti/sync/missionupload", "/sync/missionupload", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/content", "/sync/content"):

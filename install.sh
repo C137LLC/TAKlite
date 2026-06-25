@@ -77,7 +77,7 @@ install_packages() {
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
-    python3-venv qrencode rsync wireguard-tools docker.io openssl zip "${compose_package}"
+    python3-venv qrencode rsync util-linux wireguard-tools docker.io openssl zip "${compose_package}"
   systemctl enable --now docker
   systemctl enable --now fail2ban
 }
@@ -309,6 +309,116 @@ EOF
   systemctl restart fail2ban
 }
 
+install_gui_update_runner() {
+  local request_dir="${BASE_DIR}/taklite/data/gui-update"
+
+  log "Installing TAKlite GUI update runner"
+  install -d -m 770 "${request_dir}"
+  chown 10001:10001 "${request_dir}" 2>/dev/null || true
+
+  cat >/usr/local/sbin/taklite-gui-update-runner <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="${BASE_DIR}"
+REQUEST_DIR="\${APP_DIR}/taklite/data/gui-update"
+REQUEST_FILE="\${REQUEST_DIR}/request.json"
+PROCESSING_FILE="\${REQUEST_DIR}/processing.json"
+STATUS_FILE="\${REQUEST_DIR}/status.json"
+LOCK_FILE="/run/taklite-gui-update.lock"
+STAGE_DIR="/root/TAKlite-update-gui"
+LOG_FILE="/root/taklite-admin/gui-update-last.log"
+
+write_status() {
+  local state="\$1"
+  local message="\${2:-}"
+  UPDATE_STATE="\${state}" UPDATE_MESSAGE="\${message}" UPDATE_REQUEST_ID="\${REQUEST_ID:-}" UPDATE_LOG="\${LOG_FILE}" python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+status = {
+    "state": os.environ.get("UPDATE_STATE", ""),
+    "message": os.environ.get("UPDATE_MESSAGE", ""),
+    "request_id": os.environ.get("UPDATE_REQUEST_ID", ""),
+    "log": os.environ.get("UPDATE_LOG", ""),
+    "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+with open(os.environ.get("STATUS_FILE", "/dev/null"), "w", encoding="utf-8") as fh:
+    json.dump(status, fh, indent=2)
+PY
+  chown 10001:10001 "\${STATUS_FILE}" 2>/dev/null || true
+  chmod 660 "\${STATUS_FILE}" 2>/dev/null || true
+}
+
+export STATUS_FILE
+install -d -m 770 "\${REQUEST_DIR}"
+chown 10001:10001 "\${REQUEST_DIR}" 2>/dev/null || true
+exec 9>"\${LOCK_FILE}"
+flock -n 9 || exit 0
+[[ -f "\${REQUEST_FILE}" ]] || exit 0
+mv "\${REQUEST_FILE}" "\${PROCESSING_FILE}"
+chown root:root "\${PROCESSING_FILE}" 2>/dev/null || true
+chmod 600 "\${PROCESSING_FILE}" 2>/dev/null || true
+
+REQUEST_ID="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+TARGET_TAG="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("target_tag",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+
+write_status "running" "Updating TAKlite"
+mkdir -p /root/taklite-admin
+if [[ "\${TARGET_TAG}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+  CLONE_ARGS=(--depth 1 --branch "\${TARGET_TAG}" https://github.com/C137LLC/TAKlite.git "\${STAGE_DIR}")
+else
+  CLONE_ARGS=(--depth 1 https://github.com/C137LLC/TAKlite.git "\${STAGE_DIR}")
+fi
+
+set +e
+{
+  date -u
+  rm -rf "\${STAGE_DIR}"
+  git clone "\${CLONE_ARGS[@]}"
+  cd "\${APP_DIR}"
+  ./update.sh --from-dir "\${STAGE_DIR}" --app-dir "\${APP_DIR}"
+} >"\${LOG_FILE}" 2>&1
+rc=\$?
+set -e
+
+if [[ "\${rc}" -eq 0 ]]; then
+  write_status "ok" "TAKlite update complete"
+else
+  write_status "failed" "TAKlite update failed; see \${LOG_FILE}"
+fi
+rm -f "\${PROCESSING_FILE}"
+exit "\${rc}"
+EOF
+  chmod 700 /usr/local/sbin/taklite-gui-update-runner
+
+  cat >/etc/systemd/system/taklite-gui-update.service <<EOF
+[Unit]
+Description=TAKlite GUI Update Runner
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/taklite-gui-update-runner
+EOF
+
+  cat >/etc/systemd/system/taklite-gui-update.path <<EOF
+[Unit]
+Description=Watch for TAKlite GUI update requests
+
+[Path]
+PathExists=${request_dir}/request.json
+Unit=taklite-gui-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now taklite-gui-update.path
+}
+
 start_taklite() {
   local cert_password="${TAKLITE_CERT_PASSWORD}"
 
@@ -382,10 +492,11 @@ TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT}
 TAKLITE_ALLOW_LEGACY_CLIENT_CERT=${TAKLITE_ALLOW_LEGACY_CLIENT_CERT}
 TAKLITE_ACCESS_CONTROL_ENFORCE=${TAKLITE_ACCESS_CONTROL_ENFORCE}
 TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS=2.5
-TAKLITE_GUI_UPDATE_ENABLED=false
+TAKLITE_GUI_UPDATE_ENABLED=true
 TAKLITE_GUI_UPDATE_COMMAND=
 TAKLITE_GUI_UPDATE_WORKDIR=
 TAKLITE_GUI_UPDATE_TIMEOUT_SECONDS=900
+TAKLITE_GUI_UPDATE_REQUEST_DIR=/data/gui-update
 EOF
   chmod 600 "${BASE_DIR}/.env"
 
@@ -550,6 +661,7 @@ main() {
   configure_wgdashboard
   install_wgdashboard_service
   configure_fail2ban
+  install_gui_update_runner
   start_taklite
   write_admin_notes
   print_summary
