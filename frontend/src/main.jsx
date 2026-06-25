@@ -17,6 +17,7 @@ import {
   QrCode,
   RefreshCw,
   RotateCw,
+  Settings,
   ShieldCheck,
   Trash2,
   UserPlus,
@@ -35,6 +36,7 @@ const navItems = [
   ['users', Users, 'Users'],
   ['packages', Boxes, 'Connection Packages'],
   ['access', ShieldCheck, 'Access'],
+  ['settings', Settings, 'Settings'],
 ];
 
 function authHeaders(session, extra = {}) {
@@ -83,6 +85,17 @@ function fmtUptime(value) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${mins}m`;
+}
+
+function fmtDuration(secondsValue) {
+  const seconds = Math.max(0, Math.floor(Number(secondsValue || 0)));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (days) return `${days}d ${hours}h`;
   return `${hours}h ${mins}m`;
 }
 
@@ -263,6 +276,7 @@ function App() {
         {active === 'users' && <UsersPanel users={data.portalUsers} access={data.access} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
         {active === 'packages' && <ProfilesPanel profiles={data.profiles} certPassword={data.certPassword} session={session} load={load} setStatus={setStatus} />}
         {active === 'access' && <AccessPanel users={data.portalUsers} access={data.access} session={session} load={load} setStatus={setStatus} />}
+        {active === 'settings' && <SettingsPanel health={data.systemHealth} wgUrl={wgUrl} setStatus={setStatus} />}
       </main>
     </div>
   );
@@ -394,8 +408,8 @@ function HealthPanel({ health }) {
       <Panel title="Security" icon={ShieldCheck} wide>
         <div className="health-grid wide">
           <HealthMetric label="Access Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} />
-          <HealthMetric label="Client Cert Required" value={security.cot_tls_require_client_cert ? 'On' : 'Off'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} />
-          <HealthMetric label="Legacy Cert CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} />
+          <HealthMetric label="TLS Client Cert Required" value={security.cot_tls_require_client_cert ? 'On' : 'Off'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} />
+          <HealthMetric label="Legacy Shared Cert CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} />
           <HealthMetric label="Admin Auth" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} />
           <HealthMetric label="WG Dashboard" value={health.wireguard?.dashboard_url || '-'} />
         </div>
@@ -405,6 +419,110 @@ function HealthPanel({ health }) {
           <div className="error-box">{database.error}</div>
         </Panel>
       ) : null}
+    </div>
+  );
+}
+
+function SettingsPanel({ health, wgUrl, setStatus }) {
+  if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
+  const connections = health.connections || {};
+  const config = health.config || {};
+  const runtime = health.runtime || {};
+  const security = health.security || {};
+  const updates = health.updates || {};
+  const gitCommand = `cd /root
+rm -rf /root/TAKlite-update
+git clone https://github.com/C137LLC/TAKlite.git /root/TAKlite-update
+
+cd /root/taklite || cd /root/TAKlite
+./update.sh --from-dir /root/TAKlite-update --app-dir "$PWD"`;
+  const zipCommand = `cd /root/taklite || cd /root/TAKlite
+./update.sh /root/TAKlite-v0.2.13.zip`;
+
+  const copy = async (text, message) => {
+    await navigator.clipboard.writeText(text);
+    setStatus(message);
+  };
+
+  return (
+    <div className="dashboard-grid">
+      <Panel title="Server" icon={Gauge}>
+        <div className="health-grid">
+          <HealthMetric label="Version" value={health.version || '-'} />
+          <HealthMetric label="Uptime" value={fmtDuration(runtime.uptime_seconds)} />
+          <HealthMetric label="Host" value={config.public_host || config.server_host || '-'} />
+          <HealthMetric label="Container" value={runtime.container_status || '-'} tone={runtime.container_status === 'running' ? 'good' : 'warn'} />
+          <HealthMetric label="HTTP / HTTPS" value={`${connections.http_port || '-'} / ${connections.https_port || '-'}`} />
+          <HealthMetric label="CoT / TLS CoT" value={`${connections.cot_port || '-'} / ${connections.cot_tls_port || '-'}`} />
+          <HealthMetric label="Max Upload" value={fmtBytes(config.max_upload_bytes || 0)} />
+          <HealthMetric label="Started" value={fmtTime(runtime.started_at)} />
+        </div>
+      </Panel>
+
+      <Panel title="Security" icon={ShieldCheck}>
+        <div className="health-grid">
+          <HealthMetric label="Access Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} />
+          <HealthMetric label="TLS Client Cert" value={security.cot_tls_require_client_cert ? 'Required' : 'Optional'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} />
+          <HealthMetric label="Legacy Shared CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} />
+          <HealthMetric label="Admin Auth" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} />
+        </div>
+      </Panel>
+
+      <Panel title="WireGuard" icon={Wifi}>
+        <div className="settings-stack">
+          <div className="health-grid">
+            <HealthMetric label="Dashboard" value={wgUrl || health.wireguard?.dashboard_url || '-'} />
+            <HealthMetric label="VPN Health" value="Planned" />
+          </div>
+          {wgUrl || health.wireguard?.dashboard_url ? (
+            <a className="btn ghost settings-action" href={wgUrl || health.wireguard.dashboard_url} target="_blank" rel="noreferrer">
+              <ExternalLink size={16} />
+              Open WG Dashboard
+            </a>
+          ) : null}
+        </div>
+      </Panel>
+
+      <Panel title="Updates" icon={RotateCw} wide>
+        <div className="settings-stack">
+          <div className="settings-note">
+            Updates preserve <code>.env</code>, TAKlite data, certificates, packages, WireGuard, the admin peer, and WGDashboard config.
+          </div>
+          <div className="health-grid wide">
+            <HealthMetric label="Current Version" value={health.version || '-'} />
+            <HealthMetric label="GUI Runner" value={updates.gui_runner_enabled ? 'Enabled' : 'Disabled'} tone={updates.gui_runner_enabled ? 'good' : 'neutral'} />
+            <HealthMetric label="Backup" value="Created before update" />
+            <HealthMetric label="Release Source" value="GitHub" />
+            <HealthMetric label="Zip Update" value="Supported by CLI" />
+          </div>
+          <div className="settings-actions">
+            <a className="btn ghost" href={updates.release_url || 'https://github.com/C137LLC/TAKlite/releases'} target="_blank" rel="noreferrer">
+              <ExternalLink size={16} />
+              Check Latest Release
+            </a>
+            <button className="btn ghost" onClick={() => copy(gitCommand, 'GitHub update command copied.')}>
+              <Copy size={16} />
+              Copy GitHub Update
+            </button>
+            <button className="btn ghost" onClick={() => copy(zipCommand, 'Zip update command copied.')}>
+              <Copy size={16} />
+              Copy Zip Update
+            </button>
+            <button className="btn primary" disabled title="Host-level GUI update runner is intentionally disabled by default.">
+              <RotateCw size={16} />
+              Run Update
+            </button>
+          </div>
+          <div className="code-block">
+            <div className="mini-label">GitHub update command</div>
+            <pre>{gitCommand}</pre>
+          </div>
+          <div className="code-block">
+            <div className="mini-label">Zip update command</div>
+            <pre>{zipCommand}</pre>
+          </div>
+        </div>
+      </Panel>
     </div>
   );
 }

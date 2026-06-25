@@ -240,7 +240,7 @@ nav {
 
 .stat-strip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -330,6 +330,52 @@ nav {
 .error-box {
   padding: 14px 16px;
   background: var(--red-bg);
+}
+
+.settings-stack {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.settings-action {
+  justify-self: start;
+}
+
+.settings-note {
+  padding: 12px 13px;
+  border: 1px solid rgba(225, 180, 95, 0.22);
+  border-radius: 10px;
+  background: rgba(225, 180, 95, 0.08);
+  color: #dfc58e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.code-block {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(2, 8, 5, 0.42);
+}
+
+.code-block .mini-label {
+  padding: 10px 12px 0;
+}
+
+.code-block pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px 12px 12px;
+  color: #c8d6cc;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .panel {

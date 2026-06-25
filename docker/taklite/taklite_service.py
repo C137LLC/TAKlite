@@ -45,6 +45,7 @@ PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
 VERSION = "TAKlite 0.2.13"
+STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
@@ -1758,6 +1759,21 @@ def runtime_health():
             "http_port": HTTP_PORT,
             "https_port": HTTPS_PORT,
         },
+        "runtime": {
+            "started_at": STARTED_AT,
+            "uptime_seconds": int(time.time() - parse_utc(STARTED_AT).timestamp()) if parse_utc(STARTED_AT) else 0,
+            "hostname": socket.gethostname(),
+            "container_status": "running",
+        },
+        "config": {
+            "server_host": SERVER_HOST,
+            "public_host": PUBLIC_HOST or SERVER_HOST,
+            "http_bind": HTTP_BIND,
+            "https_bind": HTTPS_BIND,
+            "cot_bind": COT_BIND,
+            "cot_tls_bind": COT_TLS_BIND,
+            "max_upload_bytes": MAX_UPLOAD_BYTES,
+        },
         "security": {
             "access_enforcement": ACCESS_CONTROL_ENFORCE,
             "cot_tls_require_client_cert": COT_TLS_REQUIRE_CLIENT_CERT,
@@ -1767,6 +1783,12 @@ def runtime_health():
         "wireguard": {
             "dashboard_url": WG_DASHBOARD_URL,
             "visible_from_container": False,
+        },
+        "updates": {
+            "gui_runner_enabled": False,
+            "release_url": "https://github.com/C137LLC/TAKlite/releases",
+            "repo_url": "https://github.com/C137LLC/TAKlite.git",
+            "preserves": [".env", "taklite/data", "taklite/certs", "taklite/packages", "/etc/wireguard", "/root/taklite-admin", "WGDashboard config"],
         },
     }
 
