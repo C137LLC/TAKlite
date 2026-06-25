@@ -721,6 +721,12 @@ function AccessPanel({ users, access, session, load, setStatus }) {
   const links = access?.links || [];
   return (
     <div className="dashboard-grid">
+      <Panel title="Assign Users to Roles / Groups" icon={UserPlus} wide>
+        <UserAccessTable users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
+      </Panel>
+      <Panel title="Assign Selected Users" icon={Users} wide>
+        <BulkAccess users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
+      </Panel>
       <Panel title="Roles" icon={ShieldCheck}>
         <CreateRole session={session} load={load} setStatus={setStatus} />
         <RolesTable roles={roles} session={session} load={load} setStatus={setStatus} />
@@ -729,10 +735,7 @@ function AccessPanel({ users, access, session, load, setStatus }) {
         <CreateGroup session={session} load={load} setStatus={setStatus} />
         <GroupsTable groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>
-      <Panel title="Bulk User Access" icon={Users} wide>
-        <BulkAccess users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
-      </Panel>
-      <Panel title="Group Links" icon={Link2} wide>
+      <Panel title="Cross-Group Access" icon={Link2} wide>
         <GroupLinks groups={groups} links={links} session={session} load={load} setStatus={setStatus} />
       </Panel>
     </div>
@@ -864,7 +867,7 @@ function GroupsTable({ groups, session, load, setStatus }) {
 }
 
 function BulkAccess({ users, roles, groups, session, load, setStatus }) {
-  const [form, setForm] = useState({ filter: '', role_id: '', group_ids: [], group_mode: 'replace' });
+  const [form, setForm] = useState({ filter: '', role_id: '', group_ids: [], group_mode: 'replace', selected_user_ids: [] });
   const filter = form.filter.trim().toLowerCase();
   const matched = users.filter((user) => {
     if (!filter) return true;
@@ -877,32 +880,46 @@ function BulkAccess({ users, roles, groups, session, load, setStatus }) {
     ].join(' ').toLowerCase();
     return haystack.includes(filter);
   });
+  const selectedIds = new Set(form.selected_user_ids);
+  const selectedUsers = users.filter((user) => selectedIds.has(user.id));
   const toggleGroup = (id) => {
     const groupIds = new Set(form.group_ids);
     if (groupIds.has(id)) groupIds.delete(id);
     else groupIds.add(id);
     setForm({ ...form, group_ids: [...groupIds] });
   };
+  const toggleUser = (id) => {
+    const userIds = new Set(form.selected_user_ids);
+    if (userIds.has(id)) userIds.delete(id);
+    else userIds.add(id);
+    setForm({ ...form, selected_user_ids: [...userIds] });
+  };
+  const selectMatched = () => {
+    setForm({ ...form, selected_user_ids: [...new Set([...form.selected_user_ids, ...matched.map((user) => user.id)])] });
+  };
+  const clearSelected = () => {
+    setForm({ ...form, selected_user_ids: [] });
+  };
   const submit = async (event) => {
     event.preventDefault();
-    if (!matched.length) {
-      setStatus('No users match that filter.');
+    if (!selectedUsers.length) {
+      setStatus('Select one or more users first.');
       return;
     }
-    const names = matched.slice(0, 8).map((user) => user.username).join(', ');
-    const suffix = matched.length > 8 ? '...' : '';
-    if (!confirm(`Apply access changes to ${matched.length} user(s): ${names}${suffix}`)) return;
+    const names = selectedUsers.slice(0, 8).map((user) => user.username).join(', ');
+    const suffix = selectedUsers.length > 8 ? '...' : '';
+    if (!confirm(`Apply access changes to ${selectedUsers.length} selected user(s): ${names}${suffix}`)) return;
     try {
       await api('/api/access-users/bulk-set', session, {
         method: 'POST',
         body: JSON.stringify({
-          user_ids: matched.map((user) => user.id),
+          user_ids: selectedUsers.map((user) => user.id),
           role_id: form.role_id || null,
           group_ids: form.group_ids,
           group_mode: form.group_mode,
         }),
       });
-      setStatus(`Updated access for ${matched.length} user(s).`);
+      setStatus(`Updated access for ${selectedUsers.length} user(s).`);
       await load();
     } catch (error) {
       setStatus(`Bulk access update failed: ${error.message}`);
@@ -911,7 +928,7 @@ function BulkAccess({ users, roles, groups, session, load, setStatus }) {
   return (
     <form className="bulk-access" onSubmit={submit}>
       <div className="bulk-access-grid">
-        <label>Match users<input value={form.filter} onChange={(e) => setForm({ ...form, filter: e.target.value })} placeholder="alpha, team name, role name, or blank for all" /></label>
+        <label>Filter users<input value={form.filter} onChange={(e) => setForm({ ...form, filter: e.target.value })} placeholder="username, display name, role, or group" /></label>
         <label>Role<select value={form.role_id} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
           <option value="">Leave role unchanged</option>
           {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
@@ -921,8 +938,14 @@ function BulkAccess({ users, roles, groups, session, load, setStatus }) {
           <option value="add">Add groups</option>
           <option value="remove">Remove groups</option>
         </select></label>
-        <button className="btn primary" type="submit"><ShieldCheck size={16} />Apply to {matched.length}</button>
+        <button className="btn primary" type="submit"><ShieldCheck size={16} />Apply to {selectedUsers.length}</button>
       </div>
+      <div className="selection-toolbar">
+        <span className="hint">{selectedUsers.length} selected, {matched.length} visible</span>
+        <button className="btn ghost" type="button" onClick={selectMatched} disabled={!matched.length}>Select Visible</button>
+        <button className="btn ghost" type="button" onClick={clearSelected} disabled={!selectedUsers.length}>Clear</button>
+      </div>
+      <UserSelectionList users={matched} selectedIds={selectedIds} toggleUser={toggleUser} />
       <div className="group-picks">
         {groups.length ? groups.map((group) => (
           <label className="check group-chip" key={group.id}>
@@ -931,67 +954,210 @@ function BulkAccess({ users, roles, groups, session, load, setStatus }) {
           </label>
         )) : <span className="hint">Create groups before bulk assigning users.</span>}
       </div>
-      <div className="matched-users">
-        {matched.slice(0, 12).map((user) => <Badge key={user.id}>{user.username}</Badge>)}
-        {matched.length > 12 && <Badge>{matched.length - 12} more</Badge>}
+      <div className="matched-users selected-users">
+        {selectedUsers.slice(0, 12).map((user) => <Badge key={user.id}>{user.username}</Badge>)}
+        {selectedUsers.length > 12 && <Badge>{selectedUsers.length - 12} more</Badge>}
       </div>
     </form>
   );
 }
 
-function GroupLinks({ groups, links, session, load, setStatus }) {
-  if (groups.length < 2) return <Empty title="Need at least two groups" detail="Create groups first, then link which groups can see or send to other groups." />;
-  const findLink = (sourceId, targetId) => links.find((link) => link.source_group_id === sourceId && link.target_group_id === targetId) || {};
-  const update = async (sourceId, targetId, patch) => {
-    const current = findLink(sourceId, targetId);
+function UserSelectionList({ users, selectedIds, toggleUser }) {
+  if (!users.length) return <Empty title="No matching users" detail="Adjust the filter or create connection users first." />;
+  return (
+    <div className="user-selection-list">
+      {users.map((user) => (
+        <label className={selectedIds.has(user.id) ? 'user-select-row selected' : 'user-select-row'} key={user.id}>
+          <input type="checkbox" checked={selectedIds.has(user.id)} onChange={() => toggleUser(user.id)} />
+          <span>
+            <strong>{user.username}</strong>
+            <small>{user.display_name || user.description || 'No description'}</small>
+          </span>
+          <span className="user-access-summary">
+            {user.role_name ? <Badge>{user.role_name}</Badge> : <Badge>no role</Badge>}
+            {(user.groups || []).length ? user.groups.map((group) => <Badge key={group.id}>{group.name}</Badge>) : <Badge>no groups</Badge>}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function UserAccessTable({ users, roles, groups, session, load, setStatus }) {
+  const [filter, setFilter] = useState('');
+  const [drafts, setDrafts] = useState({});
+
+  useEffect(() => {
+    setDrafts(Object.fromEntries(users.map((user) => [
+      user.id,
+      {
+        role_id: user.role_id || '',
+        group_ids: [...(user.group_ids || [])],
+      },
+    ])));
+  }, [users]);
+
+  const filtered = users.filter((user) => {
+    const value = filter.trim().toLowerCase();
+    if (!value) return true;
+    return [
+      user.username,
+      user.display_name,
+      user.description,
+      user.role_name,
+      ...(user.groups || []).map((group) => group.name),
+    ].join(' ').toLowerCase().includes(value);
+  });
+
+  const updateDraft = (userId, patch) => {
+    setDrafts((current) => ({
+      ...current,
+      [userId]: {
+        ...(current[userId] || { role_id: '', group_ids: [] }),
+        ...patch,
+      },
+    }));
+  };
+
+  const toggleDraftGroup = (userId, groupId) => {
+    const draft = drafts[userId] || { role_id: '', group_ids: [] };
+    const groupIds = new Set(draft.group_ids || []);
+    if (groupIds.has(groupId)) groupIds.delete(groupId);
+    else groupIds.add(groupId);
+    updateDraft(userId, { group_ids: [...groupIds] });
+  };
+
+  const saveUser = async (user) => {
+    const draft = drafts[user.id] || { role_id: '', group_ids: [] };
     try {
-      await api('/api/access-links/set', session, {
+      await api('/api/access-users/set', session, {
         method: 'POST',
         body: JSON.stringify({
-          source_group_id: sourceId,
-          target_group_id: targetId,
-          can_see: Boolean(current.can_see),
-          can_send: Boolean(current.can_send),
-          ...patch,
+          user_id: user.id,
+          role_id: draft.role_id || null,
+          group_ids: draft.group_ids || [],
         }),
       });
-      setStatus('Group link updated.');
+      setStatus(`Updated access for ${user.username}.`);
       await load();
     } catch (error) {
-      setStatus(`Group link update failed: ${error.message}`);
+      setStatus(`User access update failed: ${error.message}`);
+    }
+  };
+
+  if (!users.length) return <Empty title="No connection users" detail="Create users before assigning roles or groups." />;
+
+  return (
+    <div className="individual-access">
+      <div className="selection-toolbar">
+        <label className="inline-filter">Filter users<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="username, role, or group" /></label>
+        <span className="hint">{filtered.length} visible</span>
+      </div>
+      <div className="table-wrap">
+        <table className="access-table individual-access-table">
+          <thead>
+            <tr><th>User</th><th>Role</th><th>Groups</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            {filtered.map((user) => {
+              const draft = drafts[user.id] || { role_id: user.role_id || '', group_ids: user.group_ids || [] };
+              return (
+                <tr key={user.id}>
+                  <td>
+                    <strong>{user.username}</strong>
+                    <span>{user.display_name || user.description || 'No description'}</span>
+                  </td>
+                  <td>
+                    <select value={draft.role_id || ''} onChange={(event) => updateDraft(user.id, { role_id: event.target.value })}>
+                      <option value="">No role</option>
+                      {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <div className="group-picks compact">
+                      {groups.length ? groups.map((group) => (
+                        <label className="check group-chip" key={group.id}>
+                          <input type="checkbox" checked={(draft.group_ids || []).includes(group.id)} onChange={() => toggleDraftGroup(user.id, group.id)} />
+                          <span className="color-dot" style={{ background: group.color || '#64c18c' }} /> {group.name}
+                        </label>
+                      )) : <span className="hint">No groups</span>}
+                    </div>
+                  </td>
+                  <td>
+                    <button className="btn ghost" type="button" onClick={() => saveUser(user)}><ShieldCheck size={16} />Save</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function GroupLinks({ groups, links, session, load, setStatus }) {
+  if (groups.length < 2) return <Empty title="Need at least two groups" detail="Create groups first, then link cross-group access." />;
+  const findLink = (sourceId, targetId) => links.find((link) => link.source_group_id === sourceId && link.target_group_id === targetId) || {};
+  const pairs = [];
+  groups.forEach((source, sourceIndex) => {
+    groups.slice(sourceIndex + 1).forEach((target) => pairs.push([source, target]));
+  });
+  const linkEnabled = (sourceId, targetId) => {
+    const link = findLink(sourceId, targetId);
+    return Boolean(link.can_see && link.can_send);
+  };
+  const pairMode = (source, target) => {
+    const forward = linkEnabled(source.id, target.id);
+    const reverse = linkEnabled(target.id, source.id);
+    if (forward && reverse) return 'two-way';
+    if (forward) return 'forward';
+    if (reverse) return 'reverse';
+    return 'none';
+  };
+  const setDirection = async (sourceId, targetId, enabled) => {
+    await api('/api/access-links/set', session, {
+      method: 'POST',
+      body: JSON.stringify({
+        source_group_id: sourceId,
+        target_group_id: targetId,
+        can_see: enabled,
+        can_send: enabled,
+      }),
+    });
+  };
+  const setMode = async (source, target, mode) => {
+    try {
+      await Promise.all([
+        setDirection(source.id, target.id, mode === 'forward' || mode === 'two-way'),
+        setDirection(target.id, source.id, mode === 'reverse' || mode === 'two-way'),
+      ]);
+      setStatus(`Updated cross-group access for ${source.name} and ${target.name}.`);
+      await load();
+    } catch (error) {
+      setStatus(`Cross-group access update failed: ${error.message}`);
     }
   };
   return (
-    <div className="table-wrap">
-      <table className="link-matrix">
-        <thead>
-          <tr>
-            <th>Source group</th>
-            {groups.map((group) => <th key={group.id}>{group.name}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((source) => (
-            <tr key={source.id}>
-              <td><strong><span className="color-dot" style={{ background: source.color || '#64c18c' }} />{source.name}</strong></td>
-              {groups.map((target) => {
-                const link = findLink(source.id, target.id);
-                const same = source.id === target.id;
-                return (
-                  <td key={target.id}>
-                    {same ? <span className="hint">own group</span> : (
-                      <div className="link-checks">
-                        <label className="check"><input type="checkbox" checked={Boolean(link.can_see)} onChange={(e) => update(source.id, target.id, { can_see: e.target.checked })} /> See</label>
-                        <label className="check"><input type="checkbox" checked={Boolean(link.can_send)} onChange={(e) => update(source.id, target.id, { can_send: e.target.checked })} /> Send</label>
-                      </div>
-                    )}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="link-pairs">
+      {pairs.map(([source, target]) => {
+        const mode = pairMode(source, target);
+        return (
+          <div className="link-pair-card" key={`${source.id}-${target.id}`}>
+            <div className="link-pair-names">
+              <strong><span className="color-dot" style={{ background: source.color || '#64c18c' }} />{source.name}</strong>
+              <Link2 size={15} />
+              <strong><span className="color-dot" style={{ background: target.color || '#64c18c' }} />{target.name}</strong>
+            </div>
+            <div className="link-mode-buttons">
+              <button className={mode === 'none' ? 'link-mode active' : 'link-mode'} type="button" onClick={() => setMode(source, target, 'none')}>No Link</button>
+              <button className={mode === 'forward' ? 'link-mode active' : 'link-mode'} type="button" onClick={() => setMode(source, target, 'forward')}>{source.name}{' -> '}{target.name}</button>
+              <button className={mode === 'reverse' ? 'link-mode active' : 'link-mode'} type="button" onClick={() => setMode(source, target, 'reverse')}>{target.name}{' -> '}{source.name}</button>
+              <button className={mode === 'two-way' ? 'link-mode active' : 'link-mode'} type="button" onClick={() => setMode(source, target, 'two-way')}>Two Way</button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1005,6 +1171,8 @@ function UsersTable({ users, session, load, setStatus, compact = false }) {
           <tr>
             <th>User</th>
             <th>Status</th>
+            {!compact && <th>Role</th>}
+            {!compact && <th>Groups</th>}
             <th>Connection</th>
             {!compact && <th>Downloads</th>}
             {!compact && <th>Re-download</th>}
@@ -1018,6 +1186,14 @@ function UsersTable({ users, session, load, setStatus, compact = false }) {
               <tr key={user.id}>
                 <td><strong>{user.username}</strong><span>{user.description || user.display_name || ''}</span></td>
                 <td><Badge tone={user.revoked ? 'bad' : 'good'}>{user.revoked ? 'revoked' : 'active'}</Badge></td>
+                {!compact && <td>{user.role_name ? <Badge>{user.role_name}</Badge> : <span className="hint">none</span>}</td>}
+                {!compact && (
+                  <td>
+                    <div className="table-badges">
+                      {(user.groups || []).length ? user.groups.map((group) => <Badge key={group.id}>{group.name}</Badge>) : <span className="hint">none</span>}
+                    </div>
+                  </td>
+                )}
                 <td><code>{user.connect_string || '-'}</code><br /><code>{url}</code></td>
                 {!compact && <td>{user.download_count || 0}<span>last {fmtTime(user.last_download_at)}</span></td>}
                 {!compact && <td>{user.allow_redownload ? 'yes' : 'no'}</td>}

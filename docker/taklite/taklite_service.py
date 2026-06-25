@@ -44,7 +44,7 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.12"
+VERSION = "TAKlite 0.2.13"
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
@@ -824,6 +824,43 @@ def access_summary():
     }
 
 
+def marti_groups_response():
+    groups = []
+    for idx, group in enumerate(list_access_groups(), start=1):
+        groups.append({
+            "name": group["name"],
+            "direction": "OUT",
+            "created": group.get("created_at", ""),
+            "type": "USER",
+            "bitpos": idx,
+            "active": True,
+            "description": group.get("description", ""),
+            "color": group.get("color", ""),
+        })
+    return {"version": 3, "type": "GroupList", "data": groups}
+
+
+def client_endpoints_response():
+    endpoints = []
+    for info in RELAY.snapshot():
+        endpoints.append({
+            **info,
+            "uid": info.get("uid", ""),
+            "callsign": info.get("callsign", ""),
+            "address": info.get("ip", ""),
+            "port": info.get("port", 0),
+            "transport": info.get("transport", ""),
+            "username": info.get("username", "") or info.get("peer_cert_cn", ""),
+            "lastEventTime": info.get("last_seen", ""),
+            "connectionTime": info.get("connected_at", ""),
+        })
+    return {"version": 3, "type": "ClientEndpointList", "data": endpoints}
+
+
+def mission_empty_response(kind="MissionList"):
+    return {"version": 3, "type": kind, "data": []}
+
+
 def create_policy_subject(username, role_id=None, group_ids=None):
     username = validate_portal_username(username)
     with db_connect() as conn:
@@ -1429,9 +1466,7 @@ def create_cert_profile(name, description=""):
     json_pref = build_server_json_pref(connect_string, truststore.name, client_p12.name)
     with zipfile.ZipFile(dp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.xml", manifest)
-        zf.writestr("server.pref", server_pref)
         zf.writestr("certs/server.pref", server_pref)
-        zf.writestr("taklite-server.pref", json_pref)
         zf.writestr("certs/taklite-server.pref", json_pref)
         zf.write(truststore, f"certs/{truststore.name}")
         zf.write(client_p12, f"certs/{client_p12.name}")
@@ -1555,7 +1590,16 @@ class CotRelay:
     def send_to(self, handler, event):
         try:
             with handler.send_lock:
-                handler.request.sendall(event)
+                previous_timeout = None
+                try:
+                    previous_timeout = handler.request.gettimeout()
+                    handler.request.settimeout(SOCKET_SEND_TIMEOUT_SECONDS)
+                    handler.request.sendall(event)
+                finally:
+                    try:
+                        handler.request.settimeout(previous_timeout)
+                    except OSError:
+                        pass
             return True
         except OSError:
             self.remove(handler)
@@ -1594,10 +1638,6 @@ class CotHandler(BaseRequestHandler):
         self.send_lock = threading.Lock()
         self.user_id = None
         self.cert_cn = ""
-        try:
-            self.request.settimeout(SOCKET_SEND_TIMEOUT_SECONDS)
-        except OSError:
-            pass
         transport = getattr(self.server, "transport", "tcp")
         peer_cert_cn = ""
         if hasattr(self.request, "getpeercert"):
@@ -1792,6 +1832,43 @@ def validate_datapackage_upload(filename, data):
         raise ValueError("datapackage must be a valid zip file") from exc
 
 
+def upload_datapackage_from_request(handler, qs):
+    creator_user_id = handler.authenticated_user_id()
+    if ACCESS_CONTROL_ENFORCE and not creator_user_id:
+        handler.send_json({"error": "client certificate identity required"}, HTTPStatus.FORBIDDEN)
+        return
+    filename, data = parse_upload(handler)
+    hash_value = qs.get("hash", [""])[0]
+    query_name = qs.get("filename", qs.get("name", [""]))[0]
+    creator_uid = qs.get("creatorUid", qs.get("creatoruid", [""]))[0]
+    url = upsert_package(
+        hash_value,
+        unquote(query_name or filename or ""),
+        creator_uid,
+        data,
+        absolute_base_url(handler),
+        creator_user_id=creator_user_id,
+        visibility="private",
+    )
+    handler.send_text(url)
+
+
+def datapackage_content_row(handler, qs):
+    hash_value = qs.get("hash", [""])[0]
+    row = find_package(hash_value)
+    if not row:
+        handler.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
+        return None
+    if not package_visible_to_request(row, handler):
+        handler.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
+        return None
+    package = Path(row["Path"])
+    if not package.exists():
+        handler.send_json({"error": "package file missing"}, HTTPStatus.NOT_FOUND)
+        return None
+    return row
+
+
 class HttpHandler(BaseHTTPRequestHandler):
     server_version = "TAKliteHTTP/0.2"
 
@@ -1848,6 +1925,15 @@ class HttpHandler(BaseHTTPRequestHandler):
         self.end_headers()
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
+
+    def send_file_head(self, path, filename):
+        filename = safe_download_name(filename, "datapackage.zip")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-zip-compressed")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_security_headers("application/x-zip-compressed")
+        self.end_headers()
 
     def send_download(self, path, filename, content_type):
         filename = safe_download_name(filename)
@@ -1911,6 +1997,21 @@ class HttpHandler(BaseHTTPRequestHandler):
     def authenticated_user_id(self):
         identity = client_identity_for_cert(self.client_cert_common_name())
         return identity["user_id"] if identity else None
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        qs = parse_qs(parsed.query)
+        if path in ("/Marti/sync/content", "/sync/content"):
+            row = datapackage_content_row(self, qs)
+            if not row:
+                return
+            self.send_file_head(Path(row["Path"]), row["Name"])
+            return
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.send_header("Content-Length", "0")
+        self.send_security_headers("text/plain")
+        self.end_headers()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -1987,19 +2088,25 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_json({"version": 2, "type": "ServerConfig", "data": {"version": VERSION, "api": "2", "hostname": socket.gethostname()}})
             return
         if path in ("/Marti/api/clientEndPoints", "/api/clientEndPoints"):
-            self.send_json({"version": 2, "type": "ClientEndpointList", "data": RELAY.snapshot()})
+            self.send_json(client_endpoints_response())
             return
         if path in ("/Marti/api/groups/groupCacheEnabled", "/api/groups/groupCacheEnabled"):
             self.send_json(False)
             return
+        if path in ("/Marti/api/groups/all", "/api/groups/all"):
+            self.send_json(marti_groups_response())
+            return
         if path in ("/Marti/api/missions/invitations", "/api/missions/invitations"):
-            self.send_json({"version": 2, "type": "MissionInvitationList", "data": []})
+            self.send_json(mission_empty_response("MissionInvitationList"))
             return
         if path in ("/Marti/api/missions/all/invitations", "/api/missions/all/invitations"):
-            self.send_json({"version": 2, "type": "MissionInvitationList", "data": []})
+            self.send_json(mission_empty_response("MissionInvitationList"))
             return
         if path in ("/Marti/api/missions", "/api/missions"):
-            self.send_json({"version": 2, "type": "MissionList", "data": []})
+            self.send_json(mission_empty_response("MissionList"))
+            return
+        if re.match(r"^/(?:Marti/)?api/missions/[^/]+/(?:changes|contents|subscriptions|log)$", path):
+            self.send_json(mission_empty_response("MissionDetailList"))
             return
         if path in ("/Marti/api/citrap", "/api/citrap"):
             self.send_json({"version": 2, "type": "CitrapList", "data": []})
@@ -2020,19 +2127,10 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_text(f"{absolute_base_url(self)}/Marti/sync/content?hash={quote(hash_value)}")
             return
         if path in ("/Marti/sync/content", "/sync/content"):
-            hash_value = qs.get("hash", [""])[0]
-            row = find_package(hash_value)
+            row = datapackage_content_row(self, qs)
             if not row:
-                self.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
                 return
-            if not package_visible_to_request(row, self):
-                self.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
-                return
-            package = Path(row["Path"])
-            if not package.exists():
-                self.send_json({"error": "package file missing"}, HTTPStatus.NOT_FOUND)
-                return
-            self.send_file(package, row["Name"])
+            self.send_file(Path(row["Path"]), row["Name"])
             return
         if path == "/certs/taklite-truststore.p12":
             truststore = CERT_DIR / "taklite-truststore.p12"
@@ -2208,19 +2306,8 @@ class HttpHandler(BaseHTTPRequestHandler):
                 portal_logout(self.headers.get("X-Portal-Token", ""))
                 self.send_json({"ok": True})
                 return
-            if path in ("/Marti/sync/missionupload", "/sync/missionupload"):
-                creator_user_id = self.authenticated_user_id()
-                if ACCESS_CONTROL_ENFORCE and not creator_user_id:
-                    self.send_json({"error": "client certificate identity required"}, HTTPStatus.FORBIDDEN)
-                    return
-                filename, data = parse_upload(self)
-                if not data:
-                    raise ValueError("empty upload")
-                hash_value = qs.get("hash", [""])[0]
-                query_name = qs.get("filename", [""])[0]
-                creator_uid = qs.get("creatorUid", [""])[0]
-                url = upsert_package(hash_value, unquote(query_name or filename or ""), creator_uid, data, absolute_base_url(self), creator_user_id=creator_user_id, visibility="private")
-                self.send_text(url)
+            if path in ("/Marti/sync/missionupload", "/sync/missionupload", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/content", "/sync/content"):
+                upload_datapackage_from_request(self, qs)
                 return
             if path == "/api/datapackages/delete":
                 if not self.require_auth():
@@ -2394,8 +2481,15 @@ class HttpHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        qs = parse_qs(parsed.query)
         if path in ("/Marti/api/missions/citrap/subscription", "/api/missions/citrap/subscription"):
             self.send_json({"version": 2, "type": "MissionSubscription", "data": {"subscribed": True}})
+            return
+        if path in ("/Marti/sync/content", "/sync/content", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/missionupload", "/sync/missionupload"):
+            try:
+                upload_datapackage_from_request(self, qs)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         match = re.match(r"^/(?:Marti/)?api/sync/metadata/([^/]+)/tool$", path)
         if not match:

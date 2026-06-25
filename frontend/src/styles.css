@@ -460,6 +460,16 @@ tr:hover td {
   background: rgba(239, 122, 112, 0.12);
 }
 
+.table-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.table-badges .badge {
+  margin-top: 0;
+}
+
 .create-grid {
   display: grid;
   grid-template-columns: minmax(160px, 220px) minmax(170px, 240px) 1fr auto auto;
@@ -600,6 +610,93 @@ select {
   align-items: end;
 }
 
+.selection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-toolbar .hint {
+  margin-right: auto;
+}
+
+.inline-filter {
+  min-width: min(100%, 320px);
+}
+
+.individual-access {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.individual-access-table {
+  min-width: 900px;
+}
+
+.individual-access-table td:nth-child(2) {
+  min-width: 180px;
+}
+
+.individual-access-table td:nth-child(3) {
+  min-width: 320px;
+}
+
+.individual-access-table .btn {
+  white-space: nowrap;
+}
+
+.user-selection-list {
+  display: grid;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(8, 15, 12, 0.32);
+}
+
+.user-select-row {
+  display: grid;
+  grid-template-columns: 22px minmax(160px, 0.8fr) minmax(220px, 1.2fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 54px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.user-select-row:last-child {
+  border-bottom: 0;
+}
+
+.user-select-row:hover,
+.user-select-row.selected {
+  background: rgba(100, 193, 140, 0.08);
+}
+
+.user-select-row strong,
+.user-select-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-select-row small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.user-access-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
 .group-picks {
   display: flex;
   flex-wrap: wrap;
@@ -631,13 +728,60 @@ select {
   min-height: 26px;
 }
 
-.link-matrix {
-  min-width: 880px;
+.selected-users:empty::before {
+  content: "No users selected";
+  color: var(--muted);
+  font-size: 13px;
 }
 
-.link-checks {
+.link-pairs {
   display: grid;
-  gap: 4px;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.link-pair-card {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.65fr) minmax(360px, 1.35fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(8, 15, 12, 0.32);
+}
+
+.link-pair-names,
+.link-mode-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-pair-names svg {
+  color: var(--muted);
+}
+
+.link-mode-buttons {
+  justify-content: flex-end;
+}
+
+.link-mode {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.link-mode:hover,
+.link-mode.active {
+  border-color: rgba(100, 193, 140, 0.45);
+  background: rgba(100, 193, 140, 0.12);
+  color: var(--text);
 }
 
 .empty-state {
@@ -754,8 +898,13 @@ select {
   .create-grid.compact,
   .create-grid.bulk,
   .access-create.group-create,
-  .bulk-access-grid {
+  .bulk-access-grid,
+  .link-pair-card {
     grid-template-columns: 1fr;
+  }
+
+  .link-mode-buttons {
+    justify-content: flex-start;
   }
 
   .bulk-summary {

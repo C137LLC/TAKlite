@@ -21,7 +21,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY docker/taklite/taklite_service.py /app/taklite_service.py
+COPY --chmod=0644 docker/taklite/taklite_service.py /app/taklite_service.py
 COPY --from=frontend /frontend/dist /app/static
 
 EXPOSE 8080 8443 58087 8089

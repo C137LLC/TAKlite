@@ -110,7 +110,7 @@ collect_settings() {
   TAKLITE_PUBLIC_HOST="$(prompt_default "TAKlite API host used in package URLs" "${TAKLITE_BIND_IP}")"
   TAKLITE_ADMIN_TOKEN="$(prompt_default "TAKlite admin token" "$(random_token)")"
   TAKLITE_CERT_PASSWORD="$(prompt_default "ATAK/WinTAK certificate password" "atakatak")"
-  TAKLITE_SECURE_MODE="$(prompt_default "Enable secure mode: require TLS cert identity and enforce groups" "no")"
+  TAKLITE_SECURE_MODE="$(prompt_default "Enable secure mode: require TLS cert identity and enforce groups" "yes")"
   if [[ "${TAKLITE_SECURE_MODE,,}" =~ ^(y|yes|true|1)$ ]]; then
     TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT="true"
     TAKLITE_ALLOW_LEGACY_CLIENT_CERT="false"
