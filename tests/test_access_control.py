@@ -146,6 +146,27 @@ class AccessControlTests(unittest.TestCase):
         self.assertFalse(self.service.package_visible_to_user(package, bravo_one["id"], enforce=True))
         self.assertTrue(self.service.package_visible_to_user(package, None, enforce=False))
 
+    def test_access_preview_reports_visible_and_seen_by_users(self):
+        admin = self.service.create_access_role("Admin", can_see_all=True, can_send_all=True)
+        student = self.service.create_access_role("Student", can_see_own_groups=True, can_send_own_groups=True)
+        hidden = self.service.create_access_role("Hidden", can_see_own_groups=False, can_send_own_groups=False)
+        alpha = self.service.create_access_group("Alpha")
+        rabbit = self.service.create_access_group("Rabbit")
+
+        lead = self.service.create_policy_subject("lead", role_id=admin["id"], group_ids=[])
+        alpha_one = self.service.create_policy_subject("alpha-one", role_id=student["id"], group_ids=[alpha["id"]])
+        alpha_two = self.service.create_policy_subject("alpha-two", role_id=student["id"], group_ids=[alpha["id"]])
+        rabbit_one = self.service.create_policy_subject("rabbit-one", role_id=hidden["id"], group_ids=[rabbit["id"]])
+
+        alpha_preview = self.service.access_preview(alpha_one["id"])
+        rabbit_preview = self.service.access_preview(rabbit_one["id"])
+
+        self.assertEqual({item["username"] for item in alpha_preview["can_see"]}, {"alpha-one", "alpha-two"})
+        self.assertNotIn("lead", {item["username"] for item in alpha_preview["can_see"]})
+        self.assertNotIn("rabbit-one", {item["username"] for item in alpha_preview["can_see"]})
+        self.assertEqual({item["username"] for item in rabbit_preview["can_see"]}, {"rabbit-one"})
+        self.assertIn("lead", {item["username"] for item in rabbit_preview["seen_by"]})
+
     def test_runtime_health_reports_database_and_storage(self):
         health = self.service.runtime_health()
 

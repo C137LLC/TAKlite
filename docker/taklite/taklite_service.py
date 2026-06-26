@@ -27,17 +27,20 @@ from urllib.request import Request, urlopen
 
 HTTP_BIND = os.environ.get("TAKLITE_HTTP_BIND", "0.0.0.0")
 HTTP_PORT = int(os.environ.get("TAKLITE_HTTP_PORT", "8080"))
+HTTP_PUBLIC_PORT = int(os.environ.get("TAKLITE_HTTP_PUBLIC_PORT", os.environ.get("TAKLITE_HTTP_HOST_PORT", str(HTTP_PORT))))
 HTTPS_BIND = os.environ.get("TAKLITE_HTTPS_BIND", "0.0.0.0")
 HTTPS_PORT = int(os.environ.get("TAKLITE_HTTPS_PORT", "8443"))
+HTTPS_PUBLIC_PORT = int(os.environ.get("TAKLITE_HTTPS_PUBLIC_PORT", os.environ.get("TAKLITE_HTTPS_HOST_PORT", str(HTTPS_PORT))))
 HTTPS_CERT = Path(os.environ.get("TAKLITE_HTTPS_CERT", "/certs/taklite.crt"))
 HTTPS_KEY = Path(os.environ.get("TAKLITE_HTTPS_KEY", "/certs/taklite.key"))
 CERT_DIR = HTTPS_CERT.parent
 CLIENT_CA = Path(os.environ.get("TAKLITE_CLIENT_CA", "/certs/taklite-ca.crt"))
 COT_BIND = os.environ.get("TAKLITE_COT_BIND", "0.0.0.0")
 COT_PORT = int(os.environ.get("TAKLITE_COT_PORT", "58087"))
+COT_PUBLIC_PORT = int(os.environ.get("TAKLITE_COT_PUBLIC_PORT", os.environ.get("TAKLITE_COT_HOST_PORT", str(COT_PORT))))
 COT_TLS_BIND = os.environ.get("TAKLITE_COT_TLS_BIND", "0.0.0.0")
 COT_TLS_PORT = int(os.environ.get("TAKLITE_COT_TLS_PORT", "8089"))
-COT_TLS_PUBLIC_PORT = int(os.environ.get("TAKLITE_COT_TLS_PUBLIC_PORT", str(COT_TLS_PORT)))
+COT_TLS_PUBLIC_PORT = int(os.environ.get("TAKLITE_COT_TLS_PUBLIC_PORT", os.environ.get("TAKLITE_COT_TLS_HOST_PORT", str(COT_TLS_PORT))))
 ADMIN_TOKEN = os.environ.get("TAKLITE_ADMIN_TOKEN", "")
 PUBLIC_HOST = os.environ.get("TAKLITE_PUBLIC_HOST", "")
 SERVER_HOST = os.environ.get("TAKLITE_SERVER_HOST", PUBLIC_HOST or "10.66.66.1")
@@ -46,7 +49,7 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.13"
+VERSION = "TAKlite 0.2.14"
 STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
@@ -65,10 +68,26 @@ GUI_UPDATE_COMMAND = os.environ.get("TAKLITE_GUI_UPDATE_COMMAND", "")
 GUI_UPDATE_WORKDIR = os.environ.get("TAKLITE_GUI_UPDATE_WORKDIR", "")
 GUI_UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TAKLITE_GUI_UPDATE_TIMEOUT_SECONDS", "900"))
 GUI_UPDATE_REQUEST_DIR = os.environ.get("TAKLITE_GUI_UPDATE_REQUEST_DIR", "")
+SETTINGS_REQUEST_DIR = os.environ.get("TAKLITE_SETTINGS_REQUEST_DIR", "")
+FIREWALL_REQUEST_DIR = os.environ.get("TAKLITE_FIREWALL_REQUEST_DIR", "")
+WG_INTERFACE = os.environ.get("TAKLITE_WG_INTERFACE", "wg0")
+PUBLIC_INTERFACE = os.environ.get("TAKLITE_PUBLIC_INTERFACE", "")
+WIREGUARD_PORT = int(os.environ.get("TAKLITE_WIREGUARD_PORT", "51820"))
+WGDASHBOARD_PORT = int(os.environ.get("TAKLITE_WGDASHBOARD_PORT", "10086"))
 RELEASES_URL = "https://github.com/C137LLC/TAKlite/releases"
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/C137LLC/TAKlite/releases/latest"
 UPDATE_STATUS_CACHE = {"checked_at": 0, "status": None}
 UPDATE_STATUS_CACHE_SECONDS = 300
+FIREWALL_SERVICES = {
+    "ssh": {"label": "SSH", "protocol": "tcp", "port": 22, "lockout_sensitive": True},
+    "wireguard": {"label": "WireGuard", "protocol": "udp", "port": WIREGUARD_PORT, "lockout_sensitive": True},
+    "wg_dashboard": {"label": "WG Dashboard", "protocol": "tcp", "port": WGDASHBOARD_PORT},
+    "taklite_admin": {"label": "TAKlite Admin", "protocol": "tcp", "port": HTTP_PUBLIC_PORT},
+    "tak_https": {"label": "TAK HTTPS/Marti", "protocol": "tcp", "port": HTTPS_PUBLIC_PORT},
+    "cot_tcp": {"label": "CoT TCP", "protocol": "tcp", "port": COT_PUBLIC_PORT},
+    "cot_tls": {"label": "TLS CoT", "protocol": "tcp", "port": COT_TLS_PUBLIC_PORT},
+}
+FIREWALL_STATES = {"public", "vpn", "closed"}
 
 EVENT_END = b"</event>"
 EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
@@ -845,6 +864,47 @@ def access_summary():
         "roles": list_access_roles(),
         "groups": list_access_groups(),
         "links": list_policy_links(),
+    }
+
+
+def access_preview(user_id):
+    user_id = int(user_id or 0)
+    users = [user for user in list_portal_users() if not user.get("revoked")]
+    subject = next((user for user in users if int(user["id"]) == user_id), None)
+    if not subject:
+        raise ValueError("user not found")
+
+    def preview_user(user, can_see=False, can_send=False):
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user.get("display_name", ""),
+            "role_name": user.get("role_name", ""),
+            "groups": user.get("groups", []),
+            "can_see": can_see,
+            "can_send": can_send,
+        }
+
+    can_see = []
+    can_send = []
+    seen_by = []
+    senders = []
+    for target in users:
+        if can_subject_see(user_id, target["id"]):
+            can_see.append(preview_user(target, can_see=True, can_send=can_subject_send(user_id, target["id"])))
+        if can_subject_send(user_id, target["id"]):
+            can_send.append(preview_user(target, can_see=can_subject_see(user_id, target["id"]), can_send=True))
+        if can_subject_see(target["id"], user_id):
+            seen_by.append(preview_user(target, can_see=True, can_send=can_subject_send(target["id"], user_id)))
+        if can_subject_send(target["id"], user_id):
+            senders.append(preview_user(target, can_see=can_subject_see(target["id"], user_id), can_send=True))
+    return {
+        "subject": preview_user(subject),
+        "can_see": can_see,
+        "can_send": can_send,
+        "seen_by": seen_by,
+        "senders": senders,
+        "enforced": ACCESS_CONTROL_ENFORCE,
     }
 
 
@@ -1762,6 +1822,232 @@ def read_json_file(path):
         return None
 
 
+def request_dir_status(path_value):
+    request_dir = Path(path_value) if path_value else None
+    if not request_dir or not request_dir.is_dir():
+        return {
+            "enabled": False,
+            "request_dir": path_value,
+            "pending": False,
+            "processing": False,
+            "last_status": None,
+        }
+    return {
+        "enabled": True,
+        "request_dir": path_value,
+        "pending": (request_dir / "request.json").exists(),
+        "processing": (request_dir / "processing.json").exists(),
+        "last_status": read_json_file(request_dir / "status.json"),
+    }
+
+
+def validate_host(value, label):
+    value = (value or "").strip()
+    if not value:
+        raise ValueError(f"{label} is required")
+    if len(value) > 253 or any(ch.isspace() for ch in value):
+        raise ValueError(f"{label} is not valid")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]+", value):
+        raise ValueError(f"{label} contains unsupported characters")
+    return value
+
+
+def validate_url(value, label):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"{label} must be an http or https URL")
+    if len(value) > 500:
+        raise ValueError(f"{label} is too long")
+    return value
+
+
+def validate_port(value, label):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a port number")
+    if port < 1 or port > 65535:
+        raise ValueError(f"{label} must be between 1 and 65535")
+    return port
+
+
+def validate_max_upload(value):
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("max upload size must be a number of bytes")
+    if size < 1024 * 1024 or size > 2 * 1024 * 1024 * 1024:
+        raise ValueError("max upload size must be between 1 MB and 2 GB")
+    return size
+
+
+def validate_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    raise ValueError("boolean setting must be true or false")
+
+
+def editable_settings_status():
+    runner = request_dir_status(SETTINGS_REQUEST_DIR)
+    values = {
+        "public_host": PUBLIC_HOST or SERVER_HOST,
+        "server_host": SERVER_HOST,
+        "wg_dashboard_url": WG_DASHBOARD_URL,
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "cot_host_port": COT_PUBLIC_PORT,
+        "cot_tls_host_port": COT_TLS_PUBLIC_PORT,
+        "http_host_port": HTTP_PUBLIC_PORT,
+        "https_host_port": HTTPS_PUBLIC_PORT,
+        "access_control_enforce": ACCESS_CONTROL_ENFORCE,
+        "cot_tls_require_client_cert": COT_TLS_REQUIRE_CLIENT_CERT,
+        "allow_legacy_client_cert": ALLOW_LEGACY_CLIENT_CERT,
+    }
+    return {
+        "values": values,
+        "runner": runner,
+        "restart_required_fields": [
+            "public_host",
+            "server_host",
+            "wg_dashboard_url",
+            "max_upload_bytes",
+            "cot_host_port",
+            "cot_tls_host_port",
+            "http_host_port",
+            "https_host_port",
+            "access_control_enforce",
+            "cot_tls_require_client_cert",
+            "allow_legacy_client_cert",
+        ],
+        "port_warning": "Changing service ports restarts TAKlite and must match WireGuard/firewall exposure.",
+    }
+
+
+def queue_settings_update(payload):
+    runner = request_dir_status(SETTINGS_REQUEST_DIR)
+    if not runner["enabled"]:
+        return {"ok": False, "error": "settings runner is not enabled"}
+    if runner["pending"] or runner["processing"]:
+        return {"ok": False, "error": "a settings update is already pending or running"}
+    values = payload.get("values") if isinstance(payload, dict) else {}
+    if not isinstance(values, dict):
+        raise ValueError("settings values are required")
+    sanitized = {
+        "TAKLITE_PUBLIC_HOST": validate_host(values.get("public_host"), "public host"),
+        "TAKLITE_SERVER_HOST": validate_host(values.get("server_host"), "server host"),
+        "TAKLITE_WGDASHBOARD_URL": validate_url(values.get("wg_dashboard_url"), "WireGuard dashboard URL"),
+        "TAKLITE_MAX_UPLOAD_BYTES": str(validate_max_upload(values.get("max_upload_bytes"))),
+        "TAKLITE_COT_HOST_PORT": str(validate_port(values.get("cot_host_port"), "plain CoT port")),
+        "TAKLITE_COT_TLS_HOST_PORT": str(validate_port(values.get("cot_tls_host_port"), "TLS CoT port")),
+        "TAKLITE_HTTP_HOST_PORT": str(validate_port(values.get("http_host_port"), "admin HTTP port")),
+        "TAKLITE_HTTPS_HOST_PORT": str(validate_port(values.get("https_host_port"), "HTTPS/Marti port")),
+        "TAKLITE_ACCESS_CONTROL_ENFORCE": "true" if validate_bool(values.get("access_control_enforce")) else "false",
+        "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT": "true" if validate_bool(values.get("cot_tls_require_client_cert")) else "false",
+        "TAKLITE_ALLOW_LEGACY_CLIENT_CERT": "true" if validate_bool(values.get("allow_legacy_client_cert")) else "false",
+    }
+    request_dir = Path(SETTINGS_REQUEST_DIR)
+    request = {
+        "id": secrets.token_urlsafe(12),
+        "requested_at": utc_now(),
+        "env": sanitized,
+    }
+    tmp_file = request_dir / f".request-{request['id']}.tmp"
+    tmp_file.write_text(json.dumps(request, indent=2))
+    tmp_file.replace(request_dir / "request.json")
+    return {"ok": True, "queued": True, "request": {"id": request["id"], "requested_at": request["requested_at"]}}
+
+
+def firewall_status():
+    runner = request_dir_status(FIREWALL_REQUEST_DIR)
+    last_status = runner.get("last_status") or {}
+    service_states = last_status.get("service_states") if isinstance(last_status, dict) else {}
+    if not isinstance(service_states, dict):
+        service_states = {}
+    defaults = {
+        "ssh": "vpn",
+        "wireguard": "public",
+        "wg_dashboard": "vpn",
+        "taklite_admin": "vpn",
+        "tak_https": "vpn",
+        "cot_tcp": "vpn",
+        "cot_tls": "vpn",
+    }
+    services = []
+    for key, config in FIREWALL_SERVICES.items():
+        state = service_states.get(key) or defaults.get(key, "vpn")
+        if state not in FIREWALL_STATES:
+            state = defaults.get(key, "vpn")
+        services.append({
+            "key": key,
+            "label": config["label"],
+            "protocol": config["protocol"],
+            "port": config["port"],
+            "state": state,
+            "recommended_state": defaults.get(key, "vpn"),
+            "lockout_sensitive": bool(config.get("lockout_sensitive")),
+        })
+    return {
+        "runner": runner,
+        "services": services,
+        "interfaces": {
+            "wireguard": WG_INTERFACE,
+            "public": PUBLIC_INTERFACE,
+        },
+        "states": ["public", "vpn", "closed"],
+        "warnings": [
+            "WireGuard UDP should remain public or remote VPN access will fail.",
+            "Closing public SSH can lock you out unless SSH over WireGuard is confirmed.",
+            "Firewall changes are separate from TAKlite port settings.",
+        ],
+    }
+
+
+def queue_firewall_update(payload):
+    runner = request_dir_status(FIREWALL_REQUEST_DIR)
+    if not runner["enabled"]:
+        return {"ok": False, "error": "firewall runner is not enabled"}
+    if runner["pending"] or runner["processing"]:
+        return {"ok": False, "error": "a firewall update is already pending or running"}
+    services = payload.get("services") if isinstance(payload, dict) else None
+    if not isinstance(services, dict):
+        raise ValueError("firewall services are required")
+    sanitized = {}
+    for key, state in services.items():
+        if key not in FIREWALL_SERVICES:
+            raise ValueError(f"unknown firewall service: {key}")
+        state = (state or "").strip().lower()
+        if state not in FIREWALL_STATES:
+            raise ValueError(f"invalid firewall state for {key}")
+        sanitized[key] = state
+    if sanitized.get("wireguard") == "closed":
+        raise ValueError("WireGuard cannot be closed from the GUI")
+    if sanitized.get("ssh") == "closed" and payload.get("confirm_ssh_close") != "SSH_OVER_WG_CONFIRMED":
+        raise ValueError("confirm SSH over WireGuard before closing SSH")
+    for key in FIREWALL_SERVICES:
+        sanitized.setdefault(key, next((item["state"] for item in firewall_status()["services"] if item["key"] == key), "vpn"))
+    request_dir = Path(FIREWALL_REQUEST_DIR)
+    request = {
+        "id": secrets.token_urlsafe(12),
+        "requested_at": utc_now(),
+        "services": sanitized,
+        "service_definitions": FIREWALL_SERVICES,
+        "interfaces": {"wireguard": WG_INTERFACE, "public": PUBLIC_INTERFACE},
+    }
+    tmp_file = request_dir / f".request-{request['id']}.tmp"
+    tmp_file.write_text(json.dumps(request, indent=2))
+    tmp_file.replace(request_dir / "request.json")
+    return {"ok": True, "queued": True, "request": {"id": request["id"], "requested_at": request["requested_at"]}}
+
+
 def runtime_health():
     db_ok = False
     db_error = ""
@@ -2355,6 +2641,16 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(runtime_health())
             return
+        if path == "/api/settings":
+            if not self.require_auth():
+                return
+            self.send_json(editable_settings_status())
+            return
+        if path == "/api/firewall/status":
+            if not self.require_auth():
+                return
+            self.send_json(firewall_status())
+            return
         if path == "/api/admin/update/status":
             if not self.require_auth():
                 return
@@ -2387,6 +2683,11 @@ class HttpHandler(BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json(access_summary())
+            return
+        if path == "/api/access-preview":
+            if not self.require_auth():
+                return
+            self.send_json(access_preview(qs.get("user_id", ["0"])[0]))
             return
         if path == "/api/portal-users/qr":
             if not self.require_auth():
@@ -2491,6 +2792,18 @@ class HttpHandler(BaseHTTPRequestHandler):
                     return
                 payload = self.read_json()
                 result = run_gui_update(payload.get("confirm", ""), payload.get("target_tag", ""))
+                self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
+            if path == "/api/settings/apply":
+                if not self.require_auth():
+                    return
+                result = queue_settings_update(self.read_json())
+                self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
+            if path == "/api/firewall/apply":
+                if not self.require_auth():
+                    return
+                result = queue_firewall_update(self.read_json())
                 self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
             if path in ("/Marti/sync/missionupload", "/sync/missionupload", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/content", "/sync/content"):

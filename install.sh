@@ -419,11 +419,308 @@ EOF
   systemctl enable --now taklite-gui-update.path
 }
 
+install_settings_runner() {
+  local request_dir="${BASE_DIR}/taklite/data/settings"
+
+  log "Installing TAKlite settings runner"
+  install -d -m 770 "${request_dir}"
+  chown 10001:10001 "${request_dir}" 2>/dev/null || true
+
+  cat >/usr/local/sbin/taklite-settings-runner <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="${BASE_DIR}"
+REQUEST_DIR="\${APP_DIR}/taklite/data/settings"
+REQUEST_FILE="\${REQUEST_DIR}/request.json"
+PROCESSING_FILE="\${REQUEST_DIR}/processing.json"
+STATUS_FILE="\${REQUEST_DIR}/status.json"
+LOCK_FILE="/run/taklite-settings.lock"
+LOG_FILE="/root/taklite-admin/settings-last.log"
+
+write_status() {
+  local state="\$1"
+  local message="\${2:-}"
+  SETTINGS_STATE="\${state}" SETTINGS_MESSAGE="\${message}" SETTINGS_REQUEST_ID="\${REQUEST_ID:-}" SETTINGS_LOG="\${LOG_FILE}" STATUS_FILE="\${STATUS_FILE}" python3 - <<'PY'
+import json, os
+from datetime import datetime, timezone
+status = {
+    "state": os.environ.get("SETTINGS_STATE", ""),
+    "message": os.environ.get("SETTINGS_MESSAGE", ""),
+    "request_id": os.environ.get("SETTINGS_REQUEST_ID", ""),
+    "log": os.environ.get("SETTINGS_LOG", ""),
+    "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+with open(os.environ["STATUS_FILE"], "w", encoding="utf-8") as fh:
+    json.dump(status, fh, indent=2)
+PY
+  chown 10001:10001 "\${STATUS_FILE}" 2>/dev/null || true
+  chmod 660 "\${STATUS_FILE}" 2>/dev/null || true
+}
+
+install -d -m 770 "\${REQUEST_DIR}"
+chown 10001:10001 "\${REQUEST_DIR}" 2>/dev/null || true
+exec 9>"\${LOCK_FILE}"
+flock -n 9 || exit 0
+[[ -f "\${REQUEST_FILE}" ]] || exit 0
+mv "\${REQUEST_FILE}" "\${PROCESSING_FILE}"
+chown root:root "\${PROCESSING_FILE}" 2>/dev/null || true
+chmod 600 "\${PROCESSING_FILE}" 2>/dev/null || true
+REQUEST_ID="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+
+write_status "running" "Applying TAKlite settings"
+mkdir -p /root/taklite-admin
+set +e
+{
+  date -u
+  REQUEST_FILE="\${PROCESSING_FILE}" ENV_FILE="\${APP_DIR}/.env" python3 - <<'PY'
+import json, os, pathlib, shutil
+allowed = {
+    "TAKLITE_PUBLIC_HOST",
+    "TAKLITE_SERVER_HOST",
+    "TAKLITE_WGDASHBOARD_URL",
+    "TAKLITE_MAX_UPLOAD_BYTES",
+    "TAKLITE_COT_HOST_PORT",
+    "TAKLITE_COT_TLS_HOST_PORT",
+    "TAKLITE_HTTP_HOST_PORT",
+    "TAKLITE_HTTPS_HOST_PORT",
+    "TAKLITE_ACCESS_CONTROL_ENFORCE",
+    "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT",
+    "TAKLITE_ALLOW_LEGACY_CLIENT_CERT",
+}
+request = json.load(open(os.environ["REQUEST_FILE"], encoding="utf-8"))
+updates = request.get("env") or {}
+bad = sorted(set(updates) - allowed)
+if bad:
+    raise SystemExit(f"unsupported settings key: {bad[0]}")
+env_path = pathlib.Path(os.environ["ENV_FILE"])
+backup = env_path.with_suffix(env_path.suffix + ".settings.bak")
+shutil.copy2(env_path, backup)
+lines = env_path.read_text(encoding="utf-8").splitlines()
+seen = set()
+out = []
+for line in lines:
+    if "=" in line and not line.lstrip().startswith("#"):
+        key = line.split("=", 1)[0]
+        if key in updates:
+            out.append(f"{key}={updates[key]}")
+            seen.add(key)
+            continue
+    out.append(line)
+for key in sorted(set(updates) - seen):
+    out.append(f"{key}={updates[key]}")
+env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+print(f"updated {len(updates)} setting(s); backup {backup}")
+PY
+  cd "\${APP_DIR}"
+  docker compose up -d
+} >"\${LOG_FILE}" 2>&1
+rc=\$?
+set -e
+if [[ "\${rc}" -eq 0 ]]; then
+  write_status "ok" "TAKlite settings applied"
+else
+  write_status "failed" "TAKlite settings failed; see \${LOG_FILE}"
+fi
+rm -f "\${PROCESSING_FILE}"
+exit "\${rc}"
+EOF
+  chmod 700 /usr/local/sbin/taklite-settings-runner
+
+  cat >/etc/systemd/system/taklite-settings.service <<EOF
+[Unit]
+Description=TAKlite Settings Runner
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/taklite-settings-runner
+EOF
+
+  cat >/etc/systemd/system/taklite-settings.path <<EOF
+[Unit]
+Description=Watch for TAKlite settings requests
+
+[Path]
+PathExists=${request_dir}/request.json
+Unit=taklite-settings.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now taklite-settings.path
+}
+
+install_firewall_runner() {
+  local request_dir="${BASE_DIR}/taklite/data/firewall"
+
+  log "Installing TAKlite firewall runner"
+  install -d -m 770 "${request_dir}"
+  chown 10001:10001 "${request_dir}" 2>/dev/null || true
+
+  cat >/usr/local/sbin/taklite-firewall-runner <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REQUEST_DIR="${BASE_DIR}/taklite/data/firewall"
+REQUEST_FILE="\${REQUEST_DIR}/request.json"
+PROCESSING_FILE="\${REQUEST_DIR}/processing.json"
+STATUS_FILE="\${REQUEST_DIR}/status.json"
+LOCK_FILE="/run/taklite-firewall.lock"
+LOG_FILE="/root/taklite-admin/firewall-last.log"
+WG_IF="${WG_NIC}"
+
+write_status() {
+  local state="\$1"
+  local message="\${2:-}"
+  FIREWALL_STATE="\${state}" FIREWALL_MESSAGE="\${message}" FIREWALL_REQUEST_ID="\${REQUEST_ID:-}" FIREWALL_LOG="\${LOG_FILE}" STATUS_FILE="\${STATUS_FILE}" PROCESSING_FILE="\${PROCESSING_FILE}" SERVICE_STATES="\${SERVICE_STATES:-{}}" python3 - <<'PY'
+import json, os
+from datetime import datetime, timezone
+try:
+    service_states = json.loads(os.environ.get("SERVICE_STATES", "{}"))
+except Exception:
+    service_states = {}
+if not service_states:
+    try:
+        with open(os.environ.get("PROCESSING_FILE", ""), encoding="utf-8") as fh:
+            service_states = json.load(fh).get("services", {})
+    except Exception:
+        service_states = {}
+status = {
+    "state": os.environ.get("FIREWALL_STATE", ""),
+    "message": os.environ.get("FIREWALL_MESSAGE", ""),
+    "request_id": os.environ.get("FIREWALL_REQUEST_ID", ""),
+    "log": os.environ.get("FIREWALL_LOG", ""),
+    "service_states": service_states,
+    "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+with open(os.environ["STATUS_FILE"], "w", encoding="utf-8") as fh:
+    json.dump(status, fh, indent=2)
+PY
+  chown 10001:10001 "\${STATUS_FILE}" 2>/dev/null || true
+  chmod 660 "\${STATUS_FILE}" 2>/dev/null || true
+}
+
+delete_rule() {
+  local iface="\$1" proto="\$2" port="\$3"
+  if [[ -n "\${iface}" ]]; then
+    while iptables -C INPUT -i "\${iface}" -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null; do
+      iptables -D INPUT -i "\${iface}" -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null || break
+    done
+  else
+    while iptables -C INPUT -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null; do
+      iptables -D INPUT -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null || break
+    done
+  fi
+}
+
+add_rule() {
+  local iface="\$1" proto="\$2" port="\$3"
+  if [[ -n "\${iface}" ]]; then
+    iptables -C INPUT -i "\${iface}" -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -i "\${iface}" -p "\${proto}" --dport "\${port}" -j ACCEPT
+  else
+    iptables -C INPUT -p "\${proto}" --dport "\${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p "\${proto}" --dport "\${port}" -j ACCEPT
+  fi
+}
+
+apply_service() {
+  local key="\$1" proto="\$2" port="\$3" state="\$4"
+  if [[ "\${key}" == "wireguard" && "\${state}" == "closed" ]]; then
+    echo "refusing to close WireGuard"
+    return 1
+  fi
+  delete_rule "" "\${proto}" "\${port}"
+  delete_rule "\${WG_IF}" "\${proto}" "\${port}"
+  case "\${state}" in
+    public) add_rule "" "\${proto}" "\${port}" ;;
+    vpn) add_rule "\${WG_IF}" "\${proto}" "\${port}" ;;
+    closed) ;;
+    *) echo "bad state for \${key}: \${state}"; return 1 ;;
+  esac
+}
+
+install -d -m 770 "\${REQUEST_DIR}"
+chown 10001:10001 "\${REQUEST_DIR}" 2>/dev/null || true
+exec 9>"\${LOCK_FILE}"
+flock -n 9 || exit 0
+[[ -f "\${REQUEST_FILE}" ]] || exit 0
+mv "\${REQUEST_FILE}" "\${PROCESSING_FILE}"
+chown root:root "\${PROCESSING_FILE}" 2>/dev/null || true
+chmod 600 "\${PROCESSING_FILE}" 2>/dev/null || true
+REQUEST_ID="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+SERVICE_STATES="\$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("services",{}), separators=(",", ":")))' "\${PROCESSING_FILE}")"
+
+write_status "running" "Applying firewall policy"
+mkdir -p /root/taklite-admin
+set +e
+{
+  date -u
+  iptables-save >"/root/taklite-admin/iptables-before-taklite-firewall.rules" || true
+  python3 - "\${PROCESSING_FILE}" <<'PY' >/tmp/taklite-firewall-apply.sh
+import json, shlex, sys
+request = json.load(open(sys.argv[1], encoding="utf-8"))
+defs = request.get("service_definitions") or {}
+services = request.get("services") or {}
+for key, state in services.items():
+    definition = defs.get(key) or {}
+    proto = definition.get("protocol")
+    port = int(definition.get("port") or 0)
+    if key not in defs or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
+        raise SystemExit(f"bad firewall service: {key}")
+    print("apply_service", shlex.quote(key), shlex.quote(proto), shlex.quote(str(port)), shlex.quote(state))
+PY
+  source /tmp/taklite-firewall-apply.sh
+  rm -f /tmp/taklite-firewall-apply.sh
+  iptables-save >"/root/taklite-admin/iptables-after-taklite-firewall.rules" || true
+} >"\${LOG_FILE}" 2>&1
+rc=\$?
+set -e
+if [[ "\${rc}" -eq 0 ]]; then
+  write_status "ok" "Firewall policy applied"
+else
+  write_status "failed" "Firewall policy failed; see \${LOG_FILE}"
+fi
+rm -f "\${PROCESSING_FILE}"
+exit "\${rc}"
+EOF
+  chmod 700 /usr/local/sbin/taklite-firewall-runner
+
+  cat >/etc/systemd/system/taklite-firewall.service <<EOF
+[Unit]
+Description=TAKlite Firewall Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/taklite-firewall-runner
+EOF
+
+  cat >/etc/systemd/system/taklite-firewall.path <<EOF
+[Unit]
+Description=Watch for TAKlite firewall requests
+
+[Path]
+PathExists=${request_dir}/request.json
+Unit=taklite-firewall.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now taklite-firewall.path
+}
+
 start_taklite() {
   local cert_password="${TAKLITE_CERT_PASSWORD}"
 
   log "Writing TAKlite environment"
   install -d -m 700 "${BASE_DIR}/taklite/data" "${BASE_DIR}/taklite/packages" "${BASE_DIR}/taklite/certs"
+  install -d -m 770 "${BASE_DIR}/taklite/data/gui-update" "${BASE_DIR}/taklite/data/settings" "${BASE_DIR}/taklite/data/firewall"
   if [[ ! -s "${BASE_DIR}/taklite/certs/taklite-ca.crt" || ! -s "${BASE_DIR}/taklite/certs/taklite-ca.key" ]]; then
     log "Generating TAKlite local CA"
     openssl genrsa -out "${BASE_DIR}/taklite/certs/taklite-ca.key" 4096
@@ -497,6 +794,12 @@ TAKLITE_GUI_UPDATE_COMMAND=
 TAKLITE_GUI_UPDATE_WORKDIR=
 TAKLITE_GUI_UPDATE_TIMEOUT_SECONDS=900
 TAKLITE_GUI_UPDATE_REQUEST_DIR=/data/gui-update
+TAKLITE_SETTINGS_REQUEST_DIR=/data/settings
+TAKLITE_FIREWALL_REQUEST_DIR=/data/firewall
+TAKLITE_WG_INTERFACE=${WG_NIC}
+TAKLITE_PUBLIC_INTERFACE=${SERVER_NIC}
+TAKLITE_WIREGUARD_PORT=${WG_PORT}
+TAKLITE_WGDASHBOARD_PORT=${WGD_PORT}
 EOF
   chmod 600 "${BASE_DIR}/.env"
 
@@ -662,6 +965,8 @@ main() {
   install_wgdashboard_service
   configure_fail2ban
   install_gui_update_runner
+  install_settings_runner
+  install_firewall_runner
   start_taklite
   write_admin_notes
   print_summary

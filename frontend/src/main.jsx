@@ -36,6 +36,7 @@ const navItems = [
   ['users', Users, 'Users'],
   ['packages', Boxes, 'Connection Packages'],
   ['access', ShieldCheck, 'Access'],
+  ['firewall', ShieldCheck, 'Firewall'],
   ['settings', Settings, 'Settings'],
 ];
 
@@ -276,6 +277,7 @@ function App() {
         {active === 'users' && <UsersPanel users={data.portalUsers} access={data.access} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
         {active === 'packages' && <ProfilesPanel profiles={data.profiles} certPassword={data.certPassword} session={session} load={load} setStatus={setStatus} />}
         {active === 'access' && <AccessPanel users={data.portalUsers} access={data.access} session={session} load={load} setStatus={setStatus} />}
+        {active === 'firewall' && <FirewallPanel session={session} setStatus={setStatus} />}
         {active === 'settings' && <SettingsPanel health={data.systemHealth} wgUrl={wgUrl} session={session} load={load} setStatus={setStatus} />}
       </main>
     </div>
@@ -427,12 +429,17 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
   const [updating, setUpdating] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState(null);
-  const connections = health?.connections || {};
-  const config = health?.config || {};
-  const security = health?.security || {};
+  const [settings, setSettings] = useState(null);
+  const [settingsForm, setSettingsForm] = useState(null);
+  const [applying, setApplying] = useState(false);
   const updates = health?.updates || {};
   const healthVersion = health?.version || '';
   const mergedUpdate = { ...updates, ...(updateStatus || {}) };
+  const loadSettings = useCallback(async () => {
+    const result = await api('/api/settings', session);
+    setSettings(result);
+    setSettingsForm(result.values || {});
+  }, [session]);
   const checkUpdate = async (refresh = false) => {
     setCheckingUpdate(true);
     try {
@@ -466,6 +473,15 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
     return () => { cancelled = true; };
   }, [healthVersion, session]);
 
+  useEffect(() => {
+    if (!health) return undefined;
+    let cancelled = false;
+    loadSettings().catch((error) => {
+      if (!cancelled) setStatus(`Settings load failed: ${error.message}`);
+    });
+    return () => { cancelled = true; };
+  }, [health, loadSettings, setStatus]);
+
   const runUpdate = async () => {
     const latest = await checkUpdate(true);
     if (!latest.update_available) {
@@ -497,29 +513,63 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
     : mergedUpdate.latest_tag
       ? mergedUpdate.update_available ? `${mergedUpdate.latest_tag} available` : 'Up to date'
       : 'Not checked';
+  const setField = (key, value) => setSettingsForm((current) => ({ ...(current || {}), [key]: value }));
+  const applySettings = async (event) => {
+    event.preventDefault();
+    if (!settingsForm) return;
+    if (!settings?.runner?.enabled) {
+      setStatus('Settings runner is not enabled on this server yet.');
+      return;
+    }
+    if (!confirm('Apply settings and restart TAKlite if needed? Existing data, certs, packages, and WireGuard are preserved.')) return;
+    setApplying(true);
+    try {
+      const result = await api('/api/settings/apply', session, {
+        method: 'POST',
+        body: JSON.stringify({ values: settingsForm }),
+      });
+      setStatus(result.queued ? 'Settings update requested. TAKlite will restart when the host runner applies it.' : 'Settings applied.');
+      await loadSettings();
+      await load();
+    } catch (error) {
+      setStatus(`Settings apply failed: ${error.message}`);
+    } finally {
+      setApplying(false);
+    }
+  };
 
   if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
 
   return (
     <div className="dashboard-grid">
-      <Panel title="Server Configuration" icon={Gauge}>
-        <div className="settings-list">
-          <SettingsItem label="Public Host" value={config.public_host || config.server_host || '-'} detail="Used in generated ATAK / WinTAK connection packages." />
-          <SettingsItem label="Admin HTTP Port" value={connections.http_port || '-'} detail="Dashboard and client portal." />
-          <SettingsItem label="TAK HTTPS Port" value={connections.https_port || '-'} detail="Datapackage and Marti-compatible HTTPS endpoints." />
-          <SettingsItem label="CoT TCP Port" value={connections.cot_port || '-'} detail="Plain TCP CoT relay." />
-          <SettingsItem label="TLS CoT Port" value={connections.cot_tls_port || '-'} detail="Certificate-backed CoT relay for ATAK / WinTAK." />
-          <SettingsItem label="Max Upload Size" value={fmtBytes(config.max_upload_bytes || 0)} detail="Largest datapackage TAKlite will accept." />
-        </div>
-      </Panel>
-
-      <Panel title="Security Configuration" icon={ShieldCheck}>
-        <div className="settings-list">
-          <SettingsItem label="Access Policy Enforcement" value={security.access_enforcement ? 'On' : 'Off'} tone={security.access_enforcement ? 'good' : 'warn'} detail="Applies role and group visibility rules to CoT and datapackages." />
-          <SettingsItem label="TLS Client Certificates" value={security.cot_tls_require_client_cert ? 'Required' : 'Optional'} tone={security.cot_tls_require_client_cert ? 'good' : 'warn'} detail="Requires per-user certificates for TLS CoT connections." />
-          <SettingsItem label="Legacy Shared Cert CN" value={security.allow_legacy_client_cert ? 'Allowed' : 'Blocked'} tone={security.allow_legacy_client_cert ? 'warn' : 'good'} detail="Blocks old shared-cert identities when disabled." />
-          <SettingsItem label="Admin Authentication" value={security.admin_auth_enabled ? 'On' : 'Off'} tone={security.admin_auth_enabled ? 'good' : 'bad'} detail="Admin dashboard requires login after bootstrap." />
-        </div>
+      <Panel title="Server Settings" icon={Gauge} wide>
+        {!settingsForm ? <Empty title="Settings loading" detail="Waiting for editable server settings." /> : (
+          <form className="settings-form" onSubmit={applySettings}>
+            <div className="settings-note">Port, host, upload, and security changes are written to <code>.env</code> by the host runner and may restart TAKlite.</div>
+            <div className="settings-form-grid">
+              <SettingsInput label="Public Host" value={settingsForm.public_host} onChange={(value) => setField('public_host', value)} detail="Used in generated URLs and client portal links." />
+              <SettingsInput label="Server Host" value={settingsForm.server_host} onChange={(value) => setField('server_host', value)} detail="TAK connection package host." />
+              <SettingsInput label="WG Dashboard URL" value={settingsForm.wg_dashboard_url} onChange={(value) => setField('wg_dashboard_url', value)} detail="Top bar and settings shortcut." />
+              <SettingsInput label="Max Upload Bytes" type="number" value={settingsForm.max_upload_bytes} onChange={(value) => setField('max_upload_bytes', Number(value))} detail={fmtBytes(settingsForm.max_upload_bytes)} />
+              <SettingsInput label="Admin HTTP Port" type="number" value={settingsForm.http_host_port} onChange={(value) => setField('http_host_port', Number(value))} detail="Dashboard and client portal." />
+              <SettingsInput label="HTTPS/Marti Port" type="number" value={settingsForm.https_host_port} onChange={(value) => setField('https_host_port', Number(value))} detail="Datapackage and Marti-compatible HTTPS." />
+              <SettingsInput label="CoT TCP Port" type="number" value={settingsForm.cot_host_port} onChange={(value) => setField('cot_host_port', Number(value))} detail="Plain CoT relay." />
+              <SettingsInput label="TLS CoT Port" type="number" value={settingsForm.cot_tls_host_port} onChange={(value) => setField('cot_tls_host_port', Number(value))} detail="Certificate-backed CoT relay." />
+            </div>
+            <div className="toggle-grid">
+              <SettingsToggle label="Access Enforcement" checked={settingsForm.access_control_enforce} onChange={(value) => setField('access_control_enforce', value)} detail="Apply role and group rules to CoT and packages." />
+              <SettingsToggle label="Require Client Certs" checked={settingsForm.cot_tls_require_client_cert} onChange={(value) => setField('cot_tls_require_client_cert', value)} detail="Require per-user TLS identity for TLS CoT." />
+              <SettingsToggle label="Allow Legacy Cert CN" checked={settingsForm.allow_legacy_client_cert} onChange={(value) => setField('allow_legacy_client_cert', value)} detail="Allow old shared certificate identities." />
+            </div>
+            <div className="settings-actions">
+              <button className="btn primary" disabled={applying || settings?.runner?.pending || settings?.runner?.processing} type="submit">
+                <Settings size={16} className={applying ? 'spin' : ''} />
+                {settings?.runner?.pending || settings?.runner?.processing ? 'Settings Pending' : applying ? 'Applying' : 'Apply Settings'}
+              </button>
+              <SettingsItem label="Settings Runner" value={settings?.runner?.enabled ? 'Enabled' : 'Not Enabled'} tone={settings?.runner?.enabled ? 'good' : 'warn'} detail={settings?.runner?.last_status?.message || settings?.port_warning || ''} />
+            </div>
+          </form>
+        )}
       </Panel>
 
       <Panel title="WireGuard" icon={Wifi}>
@@ -553,6 +603,127 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
           </div>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function SettingsInput({ label, value, onChange, detail = '', type = 'text' }) {
+  return (
+    <label className="settings-field">
+      <span>{label}</span>
+      <input type={type} value={value ?? ''} onChange={(event) => onChange(event.target.value)} />
+      {detail ? <small>{detail}</small> : null}
+    </label>
+  );
+}
+
+function SettingsToggle({ label, checked, onChange, detail = '' }) {
+  return (
+    <label className="settings-toggle">
+      <input type="checkbox" checked={Boolean(checked)} onChange={(event) => onChange(event.target.checked)} />
+      <span>
+        <strong>{label}</strong>
+        {detail ? <small>{detail}</small> : null}
+      </span>
+    </label>
+  );
+}
+
+function FirewallPanel({ session, setStatus }) {
+  const [firewall, setFirewall] = useState(null);
+  const [states, setStates] = useState({});
+  const [applying, setApplying] = useState(false);
+  const loadFirewall = useCallback(async () => {
+    const result = await api('/api/firewall/status', session);
+    setFirewall(result);
+    setStates(Object.fromEntries((result.services || []).map((service) => [service.key, service.state])));
+  }, [session]);
+
+  useEffect(() => {
+    loadFirewall().catch((error) => setStatus(`Firewall load failed: ${error.message}`));
+  }, [loadFirewall, setStatus]);
+
+  const setServiceState = (key, value) => {
+    setStates((current) => ({ ...current, [key]: value }));
+  };
+
+  const applyFirewall = async () => {
+    if (!firewall?.runner?.enabled) {
+      setStatus('Firewall runner is not enabled on this server yet.');
+      return;
+    }
+    const confirmPayload = {};
+    if (states.ssh === 'closed') {
+      if (!confirm('Closing SSH can lock you out unless SSH over WireGuard is already confirmed. Continue?')) return;
+      confirmPayload.confirm_ssh_close = 'SSH_OVER_WG_CONFIRMED';
+    }
+    if (states.wireguard === 'closed') {
+      setStatus('WireGuard cannot be closed from the GUI.');
+      return;
+    }
+    if (!confirm('Apply managed firewall policy? This writes an iptables backup before changes.')) return;
+    setApplying(true);
+    try {
+      const result = await api('/api/firewall/apply', session, {
+        method: 'POST',
+        body: JSON.stringify({ services: states, ...confirmPayload }),
+      });
+      setStatus(result.queued ? 'Firewall update requested. The host runner will apply it shortly.' : 'Firewall policy applied.');
+      await loadFirewall();
+    } catch (error) {
+      setStatus(`Firewall apply failed: ${error.message}`);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (!firewall) return <Panel title="Firewall" icon={ShieldCheck} wide><Empty title="Firewall loading" detail="Waiting for managed firewall status." /></Panel>;
+
+  return (
+    <div className="dashboard-grid">
+      <Panel title="Managed Firewall" icon={ShieldCheck} wide>
+        <div className="settings-stack">
+          <div className="settings-note">This panel manages known TAKlite service exposure only. Use Public for WireGuard, VPN only for admin services, and Closed for services you intentionally want unavailable.</div>
+          <div className="firewall-grid">
+            {(firewall.services || []).map((service) => (
+              <div className="firewall-card" key={service.key}>
+                <div>
+                  <strong>{service.label}</strong>
+                  <span>{service.protocol.toUpperCase()} {service.port}</span>
+                </div>
+                <select value={states[service.key] || service.state} onChange={(event) => setServiceState(service.key, event.target.value)} disabled={service.key === 'wireguard' && states[service.key] === 'closed'}>
+                  <option value="public">Public</option>
+                  <option value="vpn">VPN only</option>
+                  <option value="closed" disabled={service.key === 'wireguard'}>Closed</option>
+                </select>
+              </div>
+            ))}
+          </div>
+          <div className="settings-actions">
+            <button className="btn primary" disabled={applying || firewall.runner?.pending || firewall.runner?.processing} type="button" onClick={applyFirewall}>
+              <ShieldCheck size={16} className={applying ? 'spin' : ''} />
+              {firewall.runner?.pending || firewall.runner?.processing ? 'Firewall Pending' : applying ? 'Applying' : 'Apply Firewall'}
+            </button>
+            <SettingsItem label="Firewall Runner" value={firewall.runner?.enabled ? 'Enabled' : 'Not Enabled'} tone={firewall.runner?.enabled ? 'good' : 'warn'} detail={firewall.runner?.last_status?.message || ''} />
+          </div>
+        </div>
+      </Panel>
+      <Panel title="Firewall Notes" icon={Gauge} wide>
+        <div className="settings-list">
+          {(firewall.warnings || []).map((warning) => <FirewallNote key={warning}>{warning}</FirewallNote>)}
+          <SettingsItem label="WireGuard Interface" value={firewall.interfaces?.wireguard || '-'} />
+          <SettingsItem label="Public Interface" value={firewall.interfaces?.public || 'auto / not set'} />
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function FirewallNote({ children }) {
+  return (
+    <div className="firewall-note">
+      <ShieldCheck size={16} />
+      <span>{children}</span>
     </div>
   );
 }
@@ -893,6 +1064,10 @@ function AccessPanel({ users, access, session, load, setStatus }) {
         <PanelHint>Select multiple users, then apply one role or group change to the whole selection.</PanelHint>
         <BulkAccess users={users} roles={roles} groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>
+      <Panel title="Access Preview" icon={ShieldCheck} wide>
+        <PanelHint>Pick a user to verify who they can see, who can see them, and send permissions before testing on devices.</PanelHint>
+        <AccessPreview users={users} session={session} setStatus={setStatus} />
+      </Panel>
       <Panel title="Role Permissions" icon={ShieldCheck}>
         <PanelHint>Use roles for permission levels. An admin-style role can see everyone without being visible to everyone else.</PanelHint>
         <CreateRole session={session} load={load} setStatus={setStatus} />
@@ -907,6 +1082,67 @@ function AccessPanel({ users, access, session, load, setStatus }) {
         <PanelHint>Link groups only when one group should see and send to another. No link means groups stay isolated unless a role has see-all/send-all.</PanelHint>
         <GroupLinks groups={groups} links={links} session={session} load={load} setStatus={setStatus} />
       </Panel>
+    </div>
+  );
+}
+
+function AccessPreview({ users, session, setStatus }) {
+  const activeUsers = users.filter((user) => !user.revoked);
+  const [userId, setUserId] = useState(activeUsers[0]?.id || '');
+  const [preview, setPreview] = useState(null);
+  const loadPreview = useCallback(async (id) => {
+    if (!id) {
+      setPreview(null);
+      return;
+    }
+    try {
+      const result = await api(`/api/access-preview?user_id=${encodeURIComponent(id)}`, session);
+      setPreview(result);
+    } catch (error) {
+      setStatus(`Access preview failed: ${error.message}`);
+    }
+  }, [session, setStatus]);
+
+  useEffect(() => {
+    if (!userId && activeUsers[0]?.id) {
+      setUserId(activeUsers[0].id);
+      return;
+    }
+    loadPreview(userId);
+  }, [userId, activeUsers.length, loadPreview]);
+
+  if (!activeUsers.length) return <Empty title="No users to preview" detail="Create connection users before previewing access policy." />;
+
+  return (
+    <div className="access-preview">
+      <div className="preview-picker">
+        <label>Preview user<select value={userId} onChange={(event) => setUserId(event.target.value)}>
+          {activeUsers.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
+        </select></label>
+        <Badge tone={preview?.enforced ? 'good' : 'warn'}>{preview?.enforced ? 'enforced' : 'not enforced'}</Badge>
+      </div>
+      {preview ? (
+        <div className="preview-columns">
+          <PreviewList title="Can See" items={preview.can_see} />
+          <PreviewList title="Can Send To" items={preview.can_send} />
+          <PreviewList title="Seen By" items={preview.seen_by} />
+          <PreviewList title="Can Receive From" items={preview.senders} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PreviewList({ title, items }) {
+  return (
+    <div className="preview-list">
+      <strong>{title}</strong>
+      {items?.length ? items.map((item) => (
+        <div className="preview-user" key={`${title}-${item.id}`}>
+          <span>{item.username}</span>
+          <small>{item.role_name || 'no role'}{(item.groups || []).length ? ` / ${item.groups.map((group) => group.name).join(', ')}` : ''}</small>
+        </div>
+      )) : <span className="hint">None</span>}
     </div>
   );
 }
