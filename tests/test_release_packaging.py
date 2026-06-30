@@ -23,6 +23,12 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_GUI_UPDATE_REQUEST_DIR: \"${TAKLITE_GUI_UPDATE_REQUEST_DIR:-}\"", compose)
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR: \"${TAKLITE_SETTINGS_REQUEST_DIR:-}\"", compose)
         self.assertIn("TAKLITE_FIREWALL_REQUEST_DIR: \"${TAKLITE_FIREWALL_REQUEST_DIR:-}\"", compose)
+        self.assertIn("TAKLITE_WGDASHBOARD_URL: \"${TAKLITE_WGDASHBOARD_URL-http://10.66.66.1:10086}\"", compose)
+        self.assertIn("TAKLITE_AUTO_INIT_CERTS: \"${TAKLITE_AUTO_INIT_CERTS:-false}\"", compose)
+        self.assertIn('user: "${TAKLITE_CONTAINER_USER:-10001:10001}"', compose)
+        self.assertIn("TAKLITE_SERVER_HOST=10.66.66.1", env_example)
+        self.assertIn("TAKLITE_AUTO_INIT_CERTS=false", env_example)
+        self.assertIn("TAKLITE_CONTAINER_USER=10001:10001", env_example)
         self.assertIn("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=true", env_example)
         self.assertIn("TAKLITE_ALLOW_LEGACY_CLIENT_CERT=false", env_example)
         self.assertIn("TAKLITE_ACCESS_CONTROL_ENFORCE=true", env_example)
@@ -31,15 +37,25 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR=", env_example)
         self.assertIn("TAKLITE_FIREWALL_REQUEST_DIR=", env_example)
         self.assertIn('prompt_default "Enable secure mode: require TLS cert identity and enforce groups" "yes"', installer)
+        self.assertIn("TAKLITE_CONTAINER_USER=10001:10001", installer)
+        self.assertIn("TAKLITE_AUTO_INIT_CERTS=false", installer)
         self.assertIn("TAKLITE_GUI_UPDATE_ENABLED=true", installer)
         self.assertIn("TAKLITE_GUI_UPDATE_REQUEST_DIR=/data/gui-update", installer)
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR=/data/settings", installer)
         self.assertIn("TAKLITE_FIREWALL_REQUEST_DIR=/data/firewall", installer)
 
         updater = (ROOT / "update.sh").read_text()
+        append_start = updater.index("append_env_default() {")
+        append_end = updater.index("set_env_value() {")
+        append_body = updater[append_start:append_end]
+        self.assertIn('if ! grep -q "^${key}=" "${env_file}"; then', append_body)
+        self.assertNotIn("sed -i", append_body)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT" "true"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_ALLOW_LEGACY_CLIENT_CERT" "false"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_ACCESS_CONTROL_ENFORCE" "true"', updater)
+        self.assertIn('append_env_default "${env_file}" "TAKLITE_SERVER_HOST" "10.66.66.1"', updater)
+        self.assertIn('append_env_default "${env_file}" "TAKLITE_CONTAINER_USER" "10001:10001"', updater)
+        self.assertIn('append_env_default "${env_file}" "TAKLITE_AUTO_INIT_CERTS" "false"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_GUI_UPDATE_ENABLED" "true"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_SETTINGS_REQUEST_DIR" "/data/settings"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_FIREWALL_REQUEST_DIR" "/data/firewall"', updater)
@@ -51,6 +67,19 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn('TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "true"', service)
         self.assertIn('TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "false"', service)
         self.assertIn('TAKLITE_ACCESS_CONTROL_ENFORCE", "true"', service)
+        self.assertIn('TAKLITE_AUTO_INIT_CERTS", "false"', service)
+
+    def test_portable_desktop_assets_are_packaged(self):
+        env_desktop = (ROOT / ".env.desktop.example").read_text()
+        portable_sh = ROOT / "portable-start.sh"
+        portable_ps1 = ROOT / "portable-start.ps1"
+
+        self.assertTrue(portable_sh.exists())
+        self.assertTrue(portable_ps1.exists())
+        self.assertIn("TAKLITE_AUTO_INIT_CERTS=true", env_desktop)
+        self.assertIn("WG_BIND_IP=127.0.0.1", env_desktop)
+        self.assertIn("portable mode does not install wireguard", portable_sh.read_text().lower())
+        self.assertIn("Portable mode does not install WireGuard", portable_ps1.read_text())
 
 
 if __name__ == "__main__":

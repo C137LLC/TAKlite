@@ -17,6 +17,7 @@ import {
   QrCode,
   RefreshCw,
   RotateCw,
+  Send,
   Settings,
   ShieldCheck,
   Trash2,
@@ -273,7 +274,7 @@ function App() {
         {active === 'overview' && <Overview data={data} session={session} load={load} setStatus={setStatus} />}
         {active === 'health' && <HealthPanel health={data.systemHealth} />}
         {active === 'clients' && <ClientsPanel clients={data.clients} />}
-        {active === 'datapackages' && <DatapackagesPanel packages={data.packages} session={session} load={load} setStatus={setStatus} />}
+        {active === 'datapackages' && <DatapackagesPanel packages={data.packages} clients={data.clients} session={session} load={load} setStatus={setStatus} />}
         {active === 'users' && <UsersPanel users={data.portalUsers} access={data.access} portalUrl={data.portalUrl} session={session} load={load} setStatus={setStatus} />}
         {active === 'packages' && <ProfilesPanel profiles={data.profiles} certPassword={data.certPassword} session={session} load={load} setStatus={setStatus} />}
         {active === 'access' && <AccessPanel users={data.portalUsers} access={data.access} session={session} load={load} setStatus={setStatus} />}
@@ -432,6 +433,8 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
   const [settings, setSettings] = useState(null);
   const [settingsForm, setSettingsForm] = useState(null);
   const [applying, setApplying] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [changingPassword, setChangingPassword] = useState(false);
   const updates = health?.updates || {};
   const healthVersion = health?.version || '';
   const mergedUpdate = { ...updates, ...(updateStatus || {}) };
@@ -537,6 +540,35 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
       setApplying(false);
     }
   };
+  const setPasswordField = (key, value) => setPasswordForm((current) => ({ ...current, [key]: value }));
+  const changePassword = async (event) => {
+    event.preventDefault();
+    if (!passwordForm.current_password || !passwordForm.new_password || !passwordForm.confirm_password) {
+      setStatus('Enter current password, new password, and confirmation.');
+      return;
+    }
+    if (passwordForm.new_password.length < 10) {
+      setStatus('New admin password must be at least 10 characters.');
+      return;
+    }
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      setStatus('New password and confirmation do not match.');
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await api('/api/admin/password', session, {
+        method: 'POST',
+        body: JSON.stringify(passwordForm),
+      });
+      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+      setStatus('Admin password changed. Other admin sessions were signed out.');
+    } catch (error) {
+      setStatus(`Password change failed: ${error.message}`);
+    } finally {
+      setChangingPassword(false);
+    }
+  };
 
   if (!health) return <Panel title="Settings" icon={Settings} wide><Empty title="Settings loading" detail="Refresh the dashboard to reload server settings." /></Panel>;
 
@@ -582,6 +614,21 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
             </a>
           ) : null}
         </div>
+      </Panel>
+
+      <Panel title="Admin Password" icon={KeyRound}>
+        <form className="settings-form password-settings" onSubmit={changePassword}>
+          <div className="settings-note">Change the password for the currently logged-in TAKlite admin. The current password is required.</div>
+          <SettingsInput label="Current Password" type="password" value={passwordForm.current_password} onChange={(value) => setPasswordField('current_password', value)} detail="Existing TAKlite admin password." />
+          <SettingsInput label="New Password" type="password" value={passwordForm.new_password} onChange={(value) => setPasswordField('new_password', value)} detail="At least 10 characters." />
+          <SettingsInput label="Verify New Password" type="password" value={passwordForm.confirm_password} onChange={(value) => setPasswordField('confirm_password', value)} detail="Must match the new password." />
+          <div className="settings-actions">
+            <button className="btn primary" disabled={changingPassword} type="submit">
+              <KeyRound size={16} />
+              {changingPassword ? 'Changing' : 'Change Password'}
+            </button>
+          </div>
+        </form>
       </Panel>
 
       <Panel title="Updates" icon={RotateCw}>
@@ -810,49 +857,112 @@ function ClientsTable({ clients, compact = false }) {
   );
 }
 
-function DatapackagesPanel({ packages, session, load, setStatus }) {
+function DatapackagesPanel({ packages, clients, session, load, setStatus }) {
   return (
     <Panel title="Datapackages" icon={FileArchive} wide>
-      <DatapackagesTable packages={packages} session={session} load={load} setStatus={setStatus} />
+      <DatapackagesTable packages={packages} clients={clients} session={session} load={load} setStatus={setStatus} />
     </Panel>
   );
 }
 
-function DatapackagesTable({ packages, session, load, setStatus, compact = false }) {
+function DatapackagesTable({ packages, clients = [], session, load, setStatus, compact = false }) {
+  const [sendPackage, setSendPackage] = useState(null);
   if (!packages.length) return <Empty title="No datapackages" detail="Uploaded packages from TAK clients will appear here." />;
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            {!compact && <th>Hash</th>}
-            <th>Size</th>
-            <th>Tool</th>
-            <th>Submitted</th>
-            {!compact && <th>Creator</th>}
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {packages.map((pkg) => (
-            <tr key={pkg.Hash}>
-              <td><strong>{pkg.Name}</strong></td>
-              {!compact && <td><code>{pkg.Hash}</code></td>}
-              <td>{fmtBytes(pkg.Size)}</td>
-              <td><Badge>{pkg.Tool || 'public'}</Badge></td>
-              <td>{fmtTime(pkg.SubmissionDateTime)}</td>
-              {!compact && <td><code>{pkg.CreatorUid || '-'}</code></td>}
-              <td>
-                <div className="row-actions">
-                  <a className="icon-btn" href={`/Marti/sync/content?hash=${encodeURIComponent(pkg.Hash)}`} download={pkg.Name} title="Download"><Download size={15} /></a>
-                  <button className="icon-btn danger" title="Delete" onClick={() => deletePackage(pkg, session, load, setStatus)}><Trash2 size={15} /></button>
-                </div>
-              </td>
+    <>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              {!compact && <th>Hash</th>}
+              <th>Size</th>
+              <th>Tool</th>
+              <th>Submitted</th>
+              {!compact && <th>Creator</th>}
+              <th>Action</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {packages.map((pkg) => (
+              <tr key={pkg.Hash}>
+                <td><strong>{pkg.Name}</strong></td>
+                {!compact && <td><code>{pkg.Hash}</code></td>}
+                <td>{fmtBytes(pkg.Size)}</td>
+                <td><Badge>{pkg.Tool || 'public'}</Badge></td>
+                <td>{fmtTime(pkg.SubmissionDateTime)}</td>
+                {!compact && <td><code>{pkg.CreatorUid || '-'}</code></td>}
+                <td>
+                  <div className="row-actions">
+                    <a className="icon-btn" href={`/Marti/sync/content?hash=${encodeURIComponent(pkg.Hash)}`} download={pkg.Name} title="Download"><Download size={15} /></a>
+                    {!compact && <button className="icon-btn" title="Send to clients" onClick={() => setSendPackage(pkg)}><Send size={15} /></button>}
+                    <button className="icon-btn danger" title="Delete" onClick={() => deletePackage(pkg, session, load, setStatus)}><Trash2 size={15} /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {sendPackage ? (
+        <SendDatapackagePanel
+          pkg={sendPackage}
+          clients={clients}
+          session={session}
+          setStatus={setStatus}
+          onClose={() => setSendPackage(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function SendDatapackagePanel({ pkg, clients, session, setStatus, onClose }) {
+  const selectableClients = clients.filter((client) => client.uid);
+  const [selected, setSelected] = useState(() => selectableClients.map((client) => client.uid));
+  const selectedSet = new Set(selected);
+  const toggle = (uid) => {
+    setSelected((current) => current.includes(uid) ? current.filter((item) => item !== uid) : [...current, uid]);
+  };
+  const send = async () => {
+    const result = await api('/api/datapackages/send', session, {
+      method: 'POST',
+      body: JSON.stringify({ hash: pkg.Hash, client_uids: selected }),
+    });
+    setStatus(`Sent ${pkg.Name} to ${result.sent} connected client(s).`);
+    onClose();
+  };
+  return (
+    <div className="send-panel">
+      <div>
+        <h3>Send Datapackage</h3>
+        <p>{pkg.Name}</p>
+      </div>
+      {!selectableClients.length ? (
+        <Empty title="No active clients" detail="Clients appear here after ATAK or WinTAK sends CoT traffic." />
+      ) : (
+        <>
+          <div className="send-actions">
+            <button className="btn ghost" type="button" onClick={() => setSelected(selectableClients.map((client) => client.uid))}>Select All</button>
+            <button className="btn ghost" type="button" onClick={() => setSelected([])}>Clear</button>
+          </div>
+          <div className="client-check-list">
+            {selectableClients.map((client) => (
+              <label className={selectedSet.has(client.uid) ? 'client-check selected' : 'client-check'} key={client.uid}>
+                <input type="checkbox" checked={selectedSet.has(client.uid)} onChange={() => toggle(client.uid)} />
+                <span>
+                  <strong>{client.callsign || 'Unknown'}</strong>
+                  <small>{client.uid} · {client.ip || 'no ip'}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="send-actions">
+            <button className="btn primary" type="button" onClick={send} disabled={!selected.length}><Send size={16} />Send to {selected.length}</button>
+            <button className="btn ghost" type="button" onClick={onClose}>Cancel</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

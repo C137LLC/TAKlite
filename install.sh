@@ -9,6 +9,12 @@ WG_DIR="/etc/wireguard"
 ADMIN_OUT_DIR="/root/taklite-admin"
 WGD_DIR="/opt/WGDashboard"
 WGD_SRC="${WGD_DIR}/src"
+OS_ID=""
+OS_VERSION_ID=""
+OS_CODENAME=""
+OS_PRETTY_NAME=""
+OS_ID_LIKE=""
+OS_ARCH=""
 
 log() {
   printf '[%s] %s\n' "${SCRIPT_NAME}" "$*"
@@ -41,13 +47,69 @@ detect_os() {
   [[ -r /etc/os-release ]] || die "cannot read /etc/os-release"
   # shellcheck disable=SC1091
   source /etc/os-release
-  case "${ID}" in
-    ubuntu|debian)
+  OS_ID="${ID:-unknown}"
+  OS_VERSION_ID="${VERSION_ID:-}"
+  OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+  OS_PRETTY_NAME="${PRETTY_NAME:-${OS_ID} ${OS_VERSION_ID}}"
+  OS_ID_LIKE="${ID_LIKE:-}"
+  OS_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+
+  case "${OS_ARCH}" in
+    amd64|arm64|aarch64)
       ;;
     *)
-      die "this installer targets current Ubuntu/Debian VPS hosts; detected ${ID}"
+      die "unsupported CPU architecture ${OS_ARCH}; supported: amd64/x86_64 and arm64/aarch64"
       ;;
   esac
+
+  case "${OS_ID}" in
+    ubuntu)
+      case "${OS_VERSION_ID%%.*}" in
+        22|24|26|27|28) ;;
+        *) die "unsupported Ubuntu version ${OS_VERSION_ID}; use Ubuntu 22.04 LTS or newer" ;;
+      esac
+      ;;
+    debian)
+      case "${OS_VERSION_ID%%.*}" in
+        12|13|14) ;;
+        *) die "unsupported Debian version ${OS_VERSION_ID}; use Debian 12 Bookworm or newer" ;;
+      esac
+      ;;
+    raspbian)
+      case "${OS_VERSION_ID%%.*}" in
+        12|13|14) ;;
+        *) die "unsupported Raspberry Pi OS version ${OS_VERSION_ID}; use 64-bit Bookworm or newer" ;;
+      esac
+      ;;
+    *)
+      if [[ " ${OS_ID_LIKE} " == *" debian "* ]]; then
+        log "Detected Debian-like host ${OS_PRETTY_NAME}; continuing in best-effort mode"
+      else
+        die "this installer targets Ubuntu 22.04+, Debian 12+, and Raspberry Pi OS 64-bit Bookworm+; detected ${OS_PRETTY_NAME}"
+      fi
+      ;;
+  esac
+
+  log "Detected ${OS_PRETTY_NAME} (${OS_ARCH})"
+}
+
+preflight_host() {
+  command -v apt-get >/dev/null 2>&1 || die "apt-get is required for the full VPS installer"
+  command -v systemctl >/dev/null 2>&1 || die "systemd is required for WireGuard, WGDashboard, and TAKlite host runners"
+  [[ -e /dev/net/tun ]] || die "/dev/net/tun is missing; enable TUN/TAP support on this VPS/container host"
+  if [[ "${OS_ARCH}" == "arm64" || "${OS_ARCH}" == "aarch64" ]]; then
+    log "ARM64 host detected; TAKlite supports this for Docker/TAKlite, but Raspberry Pi class hardware may build more slowly"
+  fi
+}
+
+ensure_docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    die "docker-compose v1 was found, but TAKlite needs Docker Compose v2. Install docker-compose-plugin or docker-compose-v2."
+  fi
+  die "Docker Compose v2 was not found after package install. Install docker-compose-plugin/docker-compose-v2 for this distro and rerun install.sh."
 }
 
 detect_public_endpoint() {
@@ -70,16 +132,21 @@ ipv4_prefix24() {
 install_packages() {
   log "Installing VPS packages"
   apt-get update
-  local compose_package="docker-compose-plugin"
-  if ! apt-cache show "${compose_package}" >/dev/null 2>&1; then
-    compose_package="docker-compose-v2"
-  fi
+  local compose_package=""
+  for candidate in docker-compose-plugin docker-compose-v2; do
+    if apt-cache show "${candidate}" >/dev/null 2>&1; then
+      compose_package="${candidate}"
+      break
+    fi
+  done
+  [[ -n "${compose_package}" ]] || die "could not find a Docker Compose v2 package in apt; expected docker-compose-plugin or docker-compose-v2"
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
     python3-venv qrencode rsync util-linux wireguard-tools docker.io openssl zip "${compose_package}"
   systemctl enable --now docker
   systemctl enable --now fail2ban
+  ensure_docker_compose
 }
 
 collect_settings() {
@@ -100,7 +167,7 @@ collect_settings() {
 
   base="$(ipv4_prefix24 "${WG_SERVER_IP}")"
   ADMIN_IP="$(prompt_default "Initial admin WireGuard IPv4" "${base}.2")"
-  ADMIN_ALLOWED_IPS="$(prompt_default "AllowedIPs for admin client" "${base}.0/${WG_CIDR}")"
+  ADMIN_ALLOWED_IPS="$(prompt_default "AllowedIPs for admin client" "0.0.0.0/0")"
   CLIENT_DNS="$(prompt_default "DNS resolver for generated peers" "1.1.1.1")"
   WGD_BIND_IP="$(prompt_default "WGDashboard bind IP" "${WG_SERVER_IP}")"
   WGD_PORT="$(prompt_default "WGDashboard port" "10086")"
@@ -127,7 +194,7 @@ collect_settings() {
 }
 
 write_wireguard_config() {
-  local server_priv server_pub admin_priv admin_pub admin_psk
+  local server_priv server_pub admin_priv admin_pub admin_psk wg_network
 
   [[ ! -e "${WG_DIR}/${WG_NIC}.conf" ]] || die "${WG_DIR}/${WG_NIC}.conf already exists; refusing to overwrite"
 
@@ -139,6 +206,7 @@ write_wireguard_config() {
   admin_priv="$(wg genkey)"
   admin_pub="$(printf '%s' "${admin_priv}" | wg pubkey)"
   admin_psk="$(wg genpsk)"
+  wg_network="$(ipv4_prefix24 "${WG_SERVER_IP}").0/${WG_CIDR}"
 
   cat >"${WG_DIR}/${WG_NIC}.conf" <<EOF
 [Interface]
@@ -155,7 +223,7 @@ PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_HOST_PORT} 
 PostUp = iptables -C INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT 2>/dev/null || iptables -I INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT
 PostUp = iptables -C FORWARD -i ${WG_NIC} -j ACCEPT 2>/dev/null || iptables -I FORWARD -i ${WG_NIC} -j ACCEPT
 PostUp = iptables -C FORWARD -o ${WG_NIC} -j ACCEPT 2>/dev/null || iptables -I FORWARD -o ${WG_NIC} -j ACCEPT
-PostUp = iptables -t nat -C POSTROUTING -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o ${SERVER_NIC} -j MASQUERADE
+PostUp = iptables -t nat -C POSTROUTING -s ${wg_network} -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${wg_network} -o ${SERVER_NIC} -j MASQUERADE
 PostDown = iptables -D INPUT -p udp --dport ${WG_PORT} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${WGD_PORT} -j ACCEPT 2>/dev/null || true
@@ -165,7 +233,7 @@ PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_HOST_PORT
 PostDown = iptables -D INPUT -i ${WG_NIC} -p tcp --dport ${TAKLITE_COT_TLS_HOST_PORT} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -i ${WG_NIC} -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -o ${WG_NIC} -j ACCEPT 2>/dev/null || true
-PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || true
+PostDown = iptables -t nat -D POSTROUTING -s ${wg_network} -o ${SERVER_NIC} -j MASQUERADE 2>/dev/null || true
 
 ### Client ${ADMIN_NAME}
 [Peer]
@@ -755,21 +823,68 @@ EOF_CERT
       -days 825 -sha256 \
       -extfile "${BASE_DIR}/taklite/certs/taklite-server.ext"
     cat "${BASE_DIR}/taklite/certs/taklite-server.crt" "${BASE_DIR}/taklite/certs/taklite-ca.crt" >"${BASE_DIR}/taklite/certs/taklite.crt"
-    openssl pkcs12 -export -nokeys \
-      -in "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
+    openssl genrsa -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" 2048
+    openssl req -new \
+      -key "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" \
+      -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.csr" \
+      -subj "/CN=taklite-truststore"
+    cat >"${BASE_DIR}/taklite/certs/taklite-truststore-holder.ext" <<EOF_CERT
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+EOF_CERT
+    openssl x509 -req \
+      -in "${BASE_DIR}/taklite/certs/taklite-truststore-holder.csr" \
+      -CA "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
+      -CAkey "${BASE_DIR}/taklite/certs/taklite-ca.key" \
+      -CAcreateserial \
+      -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" \
+      -days 825 -sha256 \
+      -extfile "${BASE_DIR}/taklite/certs/taklite-truststore-holder.ext"
+    openssl pkcs12 -export \
+      -inkey "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" \
+      -in "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" \
+      -certfile "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
       -out "${BASE_DIR}/taklite/certs/taklite-truststore.p12" \
       -name taklite-ca \
-      -passout pass:${cert_password}
+      -certpbe PBE-SHA1-3DES \
+      -keypbe PBE-SHA1-3DES \
+      -macalg sha1 \
+      -passout "pass:${cert_password}"
     cp "${BASE_DIR}/taklite/certs/taklite-truststore.p12" "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
-    chmod 600 "${BASE_DIR}/taklite/certs/taklite.key"
-    chmod 644 "${BASE_DIR}/taklite/certs/taklite.crt" "${BASE_DIR}/taklite/certs/taklite-server.crt" "${BASE_DIR}/taklite/certs/taklite-truststore.p12" "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
+    chmod 600 "${BASE_DIR}/taklite/certs/taklite.key" "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key"
+    chmod 644 "${BASE_DIR}/taklite/certs/taklite.crt" "${BASE_DIR}/taklite/certs/taklite-server.crt" "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" "${BASE_DIR}/taklite/certs/taklite-truststore.p12" "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
   fi
   if [[ ! -s "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12" ]]; then
-    openssl pkcs12 -export -nokeys \
-      -in "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
+    if [[ ! -s "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" || ! -s "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" ]]; then
+      openssl genrsa -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" 2048
+      openssl req -new \
+        -key "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" \
+        -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.csr" \
+        -subj "/CN=taklite-truststore"
+      cat >"${BASE_DIR}/taklite/certs/taklite-truststore-holder.ext" <<EOF_CERT
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+EOF_CERT
+      openssl x509 -req \
+        -in "${BASE_DIR}/taklite/certs/taklite-truststore-holder.csr" \
+        -CA "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
+        -CAkey "${BASE_DIR}/taklite/certs/taklite-ca.key" \
+        -CAcreateserial \
+        -out "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" \
+        -days 825 -sha256 \
+        -extfile "${BASE_DIR}/taklite/certs/taklite-truststore-holder.ext"
+    fi
+    openssl pkcs12 -export \
+      -inkey "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key" \
+      -in "${BASE_DIR}/taklite/certs/taklite-truststore-holder.crt" \
+      -certfile "${BASE_DIR}/taklite/certs/taklite-ca.crt" \
       -out "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12" \
       -name taklite-ca \
-      -passout pass:${cert_password}
+      -certpbe PBE-SHA1-3DES \
+      -keypbe PBE-SHA1-3DES \
+      -macalg sha1 \
+      -passout "pass:${cert_password}"
+    chmod 600 "${BASE_DIR}/taklite/certs/taklite-truststore-holder.key"
     chmod 644 "${BASE_DIR}/taklite/certs/${TAKLITE_BIND_IP}.p12"
   fi
   chown -R 10001:10001 "${BASE_DIR}/taklite/data" "${BASE_DIR}/taklite/packages" "${BASE_DIR}/taklite/certs"
@@ -777,6 +892,8 @@ EOF_CERT
 WG_BIND_IP=${TAKLITE_BIND_IP}
 TAKLITE_PUBLIC_HOST=${TAKLITE_PUBLIC_HOST}
 TAKLITE_SERVER_HOST=${TAKLITE_BIND_IP}
+TAKLITE_CONTAINER_USER=10001:10001
+TAKLITE_AUTO_INIT_CERTS=false
 TAKLITE_ADMIN_TOKEN=${TAKLITE_ADMIN_TOKEN}
 TAKLITE_CERT_PASSWORD=${TAKLITE_CERT_PASSWORD}
 TAKLITE_COT_HOST_PORT=${TAKLITE_COT_HOST_PORT}
@@ -956,6 +1073,7 @@ EOF
 main() {
   need_root
   detect_os
+  preflight_host
   install_packages
   collect_settings
   write_wireguard_config

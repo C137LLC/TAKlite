@@ -152,6 +152,9 @@ merge_env_defaults() {
   [[ -f "${env_file}" ]] || die "missing preserved .env at ${env_file}"
 
   append_env_default "${env_file}" "TAKLITE_CERT_PASSWORD" "atakatak"
+  append_env_default "${env_file}" "TAKLITE_SERVER_HOST" "10.66.66.1"
+  append_env_default "${env_file}" "TAKLITE_CONTAINER_USER" "10001:10001"
+  append_env_default "${env_file}" "TAKLITE_AUTO_INIT_CERTS" "false"
   append_env_default "${env_file}" "TAKLITE_COT_HOST_PORT" "58087"
   append_env_default "${env_file}" "TAKLITE_COT_TLS_HOST_PORT" "8089"
   append_env_default "${env_file}" "TAKLITE_HTTP_HOST_PORT" "8080"

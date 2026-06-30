@@ -6,7 +6,10 @@
 
 TAKlite is a lightweight WireGuard-hosted TAK relay and datapackage service for small ATAK/WinTAK teams.
 
-It installs a VPN-first stack on a fresh Ubuntu VPS: WireGuard, WGDashboard, a TAKlite admin dashboard, TLS CoT, plain TCP CoT, datapackage handling, and a simple user portal for ATAK/WinTAK `.dp.zip` connection bundles.
+It can run in two modes:
+
+- Full VPS appliance on supported Debian-based Linux servers: WireGuard, WGDashboard, TAKlite admin dashboard, TLS CoT, plain TCP CoT, datapackage handling, firewall helpers, and a simple user portal for ATAK/WinTAK `.dp.zip` connection bundles.
+- Portable Docker mode on Docker Desktop or Docker Engine: TAKlite relay/admin/datapackage services only, for local testing or deployments where VPN/firewall are handled separately.
 
 ## What It Does
 
@@ -26,7 +29,10 @@ It installs a VPN-first stack on a fresh Ubuntu VPS: WireGuard, WGDashboard, a T
 
 ## Requirements
 
-- Fresh Ubuntu 26.04 LTS x64 VPS
+Full VPS appliance:
+
+- Fresh Ubuntu 22.04+ or Debian 12+ VPS, `amd64` or `arm64`
+- Raspberry Pi OS 64-bit Bookworm+ for Pi deployments
 - Root SSH access for initial setup
 - Cloud firewall/security group control
 - WireGuard app on the admin computer or phone
@@ -34,9 +40,15 @@ It installs a VPN-first stack on a fresh Ubuntu VPS: WireGuard, WGDashboard, a T
 - Public `51820/udp` open for WireGuard
 - Temporary `22/tcp` SSH access during install
 
+Portable Docker mode:
+
+- Docker Desktop on macOS/Windows, or Docker Engine with Compose v2 on Linux
+- No WireGuard/WGDashboard/firewall automation from TAKlite
+- Existing VPN or local/LAN access if phones need to connect
+
 Do not expose TAKlite, WGDashboard, CoT, or datapackage ports publicly. They are intended to be VPN-only.
 
-## Install
+## Full VPS Install
 
 From your admin computer:
 
@@ -61,6 +73,35 @@ Root-only recovery notes are saved on the VPS:
 ```text
 /root/taklite-admin/README.txt
 ```
+
+## Portable Docker Install
+
+Use this for local testing on macOS, Windows, Linux, or Docker Desktop. It starts TAKlite only. It does not install WireGuard, WGDashboard, fail2ban, systemd services, or firewall rules.
+
+macOS/Linux/WSL/Git Bash:
+
+```bash
+git clone https://github.com/C137LLC/TAKlite.git
+cd TAKlite
+./portable-start.sh
+```
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/C137LLC/TAKlite.git
+cd TAKlite
+.\portable-start.ps1
+```
+
+Docker Desktop GUI:
+
+1. Copy `.env.desktop.example` to `.env`.
+2. Leave `WG_BIND_IP=127.0.0.1` for local-only testing, or set `WG_BIND_IP=0.0.0.0` and `TAKLITE_SERVER_HOST=YOUR_COMPUTER_LAN_IP` for phone/LAN testing.
+3. Change `TAKLITE_ADMIN_TOKEN`.
+4. Run the Compose project in Docker Desktop.
+
+Portable mode auto-generates its local CA, server cert, ATAK truststore, and server truststore when `TAKLITE_AUTO_INIT_CERTS=true`.
 
 ## Default VPN Services
 
@@ -204,6 +245,7 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, o
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
 - [Deployment And Update Lifecycle](docs/deployment-lifecycle.md)
+- [Platform Support](docs/platform-support.md)
 - [Upgrade Guide](docs/upgrade-guide.md)
 - [Test Checklist](docs/test-checklist.md)
 - [Audit Notes](docs/audit-notes.md)

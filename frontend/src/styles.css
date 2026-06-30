@@ -427,6 +427,10 @@ nav {
   gap: 10px;
 }
 
+.password-settings {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .settings-field {
   min-width: 0;
   padding: 12px;
@@ -716,6 +720,73 @@ tr:hover td {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.send-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.send-panel h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.send-panel p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.send-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.client-check-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.client-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(9, 16, 13, 0.5);
+}
+
+.client-check.selected {
+  border-color: rgba(100, 193, 140, 0.5);
+  background: rgba(100, 193, 140, 0.11);
+}
+
+.client-check span,
+.client-check small {
+  display: block;
+  min-width: 0;
+}
+
+.client-check strong {
+  font-size: 13px;
+}
+
+.client-check small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .badge {

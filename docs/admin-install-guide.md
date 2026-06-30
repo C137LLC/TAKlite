@@ -1,12 +1,17 @@
 # TAKlite Admin Install Guide
 
-This guide walks an admin through installing TAKlite on a brand new Ubuntu 26.04 LTS x64 VPS, joining the WireGuard VPN, opening the dashboards, and creating ATAK/WinTAK connection packages.
+This guide walks an admin through installing TAKlite on a brand new supported Debian-based VPS, joining the WireGuard VPN, opening the dashboards, and creating ATAK/WinTAK connection packages.
 
 For existing servers, do not rerun the installer. Use the [Upgrade Guide](upgrade-guide.md) to preserve WireGuard peers, TAKlite certs, users, datapackages, and database state.
 
+For Docker Desktop, macOS, Windows, Raspberry Pi, and distro support details, see [Platform Support](platform-support.md).
+
 ## What The Admin Needs
 
-- Fresh Ubuntu 26.04 LTS x64 VPS
+- Fresh supported Linux VPS:
+  - Ubuntu 22.04 LTS or newer, `amd64` or `arm64`
+  - Debian 12 Bookworm or newer, `amd64` or `arm64`
+  - Raspberry Pi OS 64-bit Bookworm or newer
 - Root SSH access during initial setup
 - Public cloud firewall access
 - WireGuard app on the admin computer or phone
@@ -78,7 +83,7 @@ chmod +x install.sh smoke-test.sh
 ./install.sh
 ```
 
-Use defaults unless your VPS environment requires different values.
+Use defaults unless your VPS environment requires different values. The installer checks OS family, version, CPU architecture, systemd, Docker Compose v2, and `/dev/net/tun` before making major changes.
 
 Important defaults:
 

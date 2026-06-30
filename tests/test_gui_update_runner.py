@@ -91,10 +91,30 @@ class GuiUpdateRunnerTests(unittest.TestCase):
 
         status = service.latest_release_status(refresh=True)
 
-        self.assertEqual(status["current_tag"], "v0.2.14")
+        self.assertEqual(status["current_tag"], "v0.2.15")
         self.assertTrue(status["gui_runner_enabled"])
         self.assertFalse(status["update_available"])
         self.assertTrue(status["check_error"])
+
+    def test_admin_password_can_be_changed_with_current_password(self):
+        service = load_service(self.tmp)
+        service.create_admin("admin", "OriginalPass123!")
+        token = service.create_session("admin")
+
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "admin")
+        service.change_admin_password("admin", "OriginalPass123!", "NewPass12345!", token)
+
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "")
+        self.assertEqual(service.authenticate_admin("admin", "NewPass12345!"), "admin")
+
+    def test_admin_password_change_rejects_wrong_current_password(self):
+        service = load_service(self.tmp)
+        service.create_admin("admin", "OriginalPass123!")
+
+        with self.assertRaises(PermissionError):
+            service.change_admin_password("admin", "wrong-password", "NewPass12345!")
+
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "admin")
 
     def test_settings_runner_validates_and_queues_whitelisted_env(self):
         settings_dir = self.tmp / "settings"

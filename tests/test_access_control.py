@@ -146,6 +146,11 @@ class AccessControlTests(unittest.TestCase):
         self.assertFalse(self.service.package_visible_to_user(package, bravo_one["id"], enforce=True))
         self.assertTrue(self.service.package_visible_to_user(package, None, enforce=False))
 
+    def test_public_tool_datapackage_is_visible_without_identity(self):
+        package = {"CreatorUserId": None, "Visibility": "private", "Tool": "public"}
+
+        self.assertTrue(self.service.package_visible_to_user(package, None, enforce=True))
+
     def test_access_preview_reports_visible_and_seen_by_users(self):
         admin = self.service.create_access_role("Admin", can_see_all=True, can_send_all=True)
         student = self.service.create_access_role("Student", can_see_own_groups=True, can_send_own_groups=True)
@@ -204,15 +209,17 @@ class AccessControlTests(unittest.TestCase):
         self.assertEqual(handler.request.timeouts, [self.service.SOCKET_SEND_TIMEOUT_SECONDS, None])
         self.assertIsNone(handler.request.gettimeout())
 
-    def test_connection_datapackage_has_no_duplicate_pref_entries(self):
+    def test_connection_datapackage_uses_connection_scoped_cert_preferences(self):
         cert_dir = pathlib.Path(self.tmpdir.name) / "certs"
         cert_dir.mkdir(exist_ok=True)
         (cert_dir / "taklite-ca.crt").write_text("ca", encoding="utf-8")
         (cert_dir / "taklite-ca.key").write_text("key", encoding="utf-8")
-        truststore = cert_dir / f"{self.service.SERVER_HOST}.p12"
+        truststore = cert_dir / "taklite-truststore.p12"
         truststore.write_bytes(b"truststore")
+        openssl_calls = []
 
         def fake_openssl(args):
+            openssl_calls.append(args)
             if "-out" in args:
                 out_path = pathlib.Path(args[args.index("-out") + 1])
                 out_path.write_bytes(b"generated")
@@ -225,14 +232,66 @@ class AccessControlTests(unittest.TestCase):
         with zipfile.ZipFile(package) as zf:
             names = zf.namelist()
 
-        self.assertEqual(names.count("manifest.xml"), 1)
+        self.assertEqual(names.count("MANIFEST/manifest.xml"), 1)
         self.assertEqual(names.count("certs/server.pref"), 1)
-        self.assertEqual(names.count("certs/taklite-server.pref"), 1)
-        self.assertEqual(names.count(f"certs/{self.service.SERVER_HOST}.p12"), 1)
+        self.assertEqual(names.count("certs/taklite-server.pref"), 0)
+        self.assertEqual(names.count("certs/10.66.66.1.p12"), 1)
         self.assertEqual(names.count("certs/alpha-phone.p12"), 1)
+        self.assertNotIn("manifest.xml", names)
         self.assertNotIn("server.pref", names)
         self.assertNotIn("taklite-server.pref", names)
         self.assertEqual(len(names), len(set(names)))
+        with zipfile.ZipFile(package) as zf:
+            server_pref = zf.read("certs/server.pref").decode("utf-8")
+            manifest = zf.read("MANIFEST/manifest.xml").decode("utf-8")
+        self.assertIn('<entry key="description0" class="class java.lang.String">TAKlite alpha-phone</entry>', server_pref)
+        self.assertIn('<entry key="caLocation0" class="class java.lang.String">cert/10.66.66.1.p12</entry>', server_pref)
+        self.assertIn('<entry key="certificateLocation0" class="class java.lang.String">cert/alpha-phone.p12</entry>', server_pref)
+        self.assertIn('<entry key="caLocation" class="class java.lang.String">cert/10.66.66.1.p12</entry>', server_pref)
+        self.assertIn('<entry key="certificateLocation" class="class java.lang.String">cert/alpha-phone.p12</entry>', server_pref)
+        self.assertIn('<entry key="caPassword" class="class java.lang.String">atakatak</entry>', server_pref)
+        self.assertIn('<entry key="clientPassword" class="class java.lang.String">atakatak</entry>', server_pref)
+        self.assertIn('<entry key="apiSecureServerPort" class="class java.lang.String">8443</entry>', server_pref)
+        self.assertIn('<entry key="apiUnsecureServerPort" class="class java.lang.String">8080</entry>', server_pref)
+        self.assertIn('<Parameter name="onReceiveImport" value="true"/>', manifest)
+        self.assertIn('<Content ignore="false" zipEntry="certs/server.pref"/>', manifest)
+        self.assertIn('<Content ignore="false" zipEntry="certs/10.66.66.1.p12"/>', manifest)
+        self.assertIn('<Content ignore="false" zipEntry="certs/alpha-phone.p12"/>', manifest)
+        pkcs12_calls = [call for call in openssl_calls if call[:2] == ["pkcs12", "-export"]]
+        self.assertEqual(len(pkcs12_calls), 1)
+        self.assertIn("-certpbe", pkcs12_calls[0])
+        self.assertIn("PBE-SHA1-3DES", pkcs12_calls[0])
+        self.assertIn("-keypbe", pkcs12_calls[0])
+        self.assertIn("-macalg", pkcs12_calls[0])
+        self.assertIn("sha1", pkcs12_calls[0])
+
+    def test_truststore_file_uses_stable_non_server_cert_name(self):
+        cert_dir = pathlib.Path(self.tmpdir.name) / "certs"
+        cert_dir.mkdir(exist_ok=True)
+        (cert_dir / "taklite-ca.crt").write_text("ca", encoding="utf-8")
+        (cert_dir / "taklite-ca.key").write_text("key", encoding="utf-8")
+        openssl_calls = []
+
+        def fake_openssl(args):
+            openssl_calls.append(args)
+            out_path = pathlib.Path(args[args.index("-out") + 1])
+            out_path.write_bytes(b"truststore")
+
+        with mock.patch.object(self.service, "run_openssl", side_effect=fake_openssl):
+            truststore = self.service.ensure_truststore_file()
+
+        self.assertEqual(truststore.name, "taklite-truststore.p12")
+        self.assertTrue(truststore.exists())
+        pkcs12_calls = [call for call in openssl_calls if call[:2] == ["pkcs12", "-export"]]
+        self.assertEqual(len(pkcs12_calls), 1)
+        self.assertIn("-certfile", pkcs12_calls[0])
+        self.assertIn(str(cert_dir / "taklite-ca.crt"), pkcs12_calls[0])
+        self.assertIn("-inkey", pkcs12_calls[0])
+        self.assertIn("-certpbe", pkcs12_calls[0])
+        self.assertIn("PBE-SHA1-3DES", pkcs12_calls[0])
+        self.assertIn("-keypbe", pkcs12_calls[0])
+        self.assertIn("-macalg", pkcs12_calls[0])
+        self.assertIn("sha1", pkcs12_calls[0])
 
 
 if __name__ == "__main__":

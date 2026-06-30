@@ -35,6 +35,7 @@ HTTPS_CERT = Path(os.environ.get("TAKLITE_HTTPS_CERT", "/certs/taklite.crt"))
 HTTPS_KEY = Path(os.environ.get("TAKLITE_HTTPS_KEY", "/certs/taklite.key"))
 CERT_DIR = HTTPS_CERT.parent
 CLIENT_CA = Path(os.environ.get("TAKLITE_CLIENT_CA", "/certs/taklite-ca.crt"))
+AUTO_INIT_CERTS = os.environ.get("TAKLITE_AUTO_INIT_CERTS", "false").lower() in ("1", "true", "yes", "on")
 COT_BIND = os.environ.get("TAKLITE_COT_BIND", "0.0.0.0")
 COT_PORT = int(os.environ.get("TAKLITE_COT_PORT", "58087"))
 COT_PUBLIC_PORT = int(os.environ.get("TAKLITE_COT_PUBLIC_PORT", os.environ.get("TAKLITE_COT_HOST_PORT", str(COT_PORT))))
@@ -49,7 +50,7 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.14"
+VERSION = "TAKlite 0.2.15"
 STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
@@ -297,13 +298,31 @@ def safe_download_name(filename, fallback="download.bin"):
     return name[:160] or fallback
 
 
+def normalize_datapackage_name(filename, fallback="datapackage.zip"):
+    name = safe_download_name(unquote(filename or ""), fallback)
+    if not name.lower().endswith((".zip", ".dp.zip")):
+        name = f"{name}.zip"
+    return name
+
+
+def marti_timestamp(value):
+    try:
+        parsed = parse_utc(value)
+    except Exception:
+        parsed = None
+    if not parsed:
+        return value or utc_now().replace("Z", ".000Z")
+    parsed = parsed.astimezone(timezone.utc)
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def row_to_package(row):
     return {
         "PrimaryKey": row["PrimaryKey"],
         "UID": row["UID"],
         "Name": row["Name"],
         "Hash": row["Hash"],
-        "SubmissionDateTime": row["SubmissionDateTime"],
+        "SubmissionDateTime": marti_timestamp(row["SubmissionDateTime"]),
         "SubmissionUser": row["SubmissionUser"] or "",
         "CreatorUid": row["CreatorUid"] or "",
         "Keywords": row["Keywords"] or "missionpackage",
@@ -369,6 +388,17 @@ def upsert_package(hash_value, filename, creator_uid, data, host_url, creator_us
         ))
         conn.commit()
     return f"{host_url}/Marti/sync/content?hash={quote(hash_value)}"
+
+
+def tak_marti_base_url():
+    host = PUBLIC_HOST or SERVER_HOST
+    if HTTPS_CERT.exists() and HTTPS_KEY.exists():
+        return f"https://{host}:{HTTPS_PUBLIC_PORT}"
+    return f"http://{host}:{HTTP_PUBLIC_PORT}"
+
+
+def tak_marti_content_url(hash_value):
+    return f"{tak_marti_base_url()}/Marti/sync/content?hash={quote(hash_value)}"
 
 
 def delete_package(hash_value, delete_file=True):
@@ -453,6 +483,26 @@ def server_status_event():
         '<point lat="0.0" lon="0.0" hae="9999999.0" ce="9999999.0" le="9999999.0"/>'
         '<detail><contact callsign="TAKlite"/><remarks>TAKlite keepalive</remarks></detail>'
         '</event>'
+    ).encode("utf-8")
+
+
+def fileshare_event(package):
+    name = safe_download_name(package["Name"], "datapackage.zip")
+    hash_value = package["Hash"]
+    size = int(package["Size"] or 0)
+    event_uid = f"taklite-fileshare-{uuid.uuid4()}"
+    ack_uid = str(uuid.uuid4())
+    sender_url = tak_marti_content_url(hash_value)
+    return (
+        f'<event version="2.0" uid="{html.escape(event_uid)}" type="b-f-t-r" '
+        f'time="{cot_time()}" start="{cot_time()}" stale="{cot_time(600)}" how="h-e">'
+        '<point lat="0.0" lon="0.0" hae="9999999.0" ce="9999999.0" le="9999999.0"/>'
+        '<detail>'
+        f'<fileshare filename="{html.escape(name)}" name="{html.escape(name)}" '
+        f'senderUrl="{html.escape(sender_url)}" sizeInBytes="{size}" '
+        f'sha256="{html.escape(hash_value)}" senderUid="taklite-server" senderCallsign="TAKlite Admin"/>'
+        f'<ackrequest uid="{html.escape(ack_uid)}" ackrequested="true" tag="{html.escape(name)}"/>'
+        '</detail></event>'
     ).encode("utf-8")
 
 
@@ -556,6 +606,24 @@ def authenticate_admin(username, password):
     if not row or not verify_password(password or "", row["password_hash"]):
         return ""
     return (username or "").strip()
+
+
+def change_admin_password(username, current_password, new_password, keep_session_token=""):
+    username = (username or "").strip()
+    if len(new_password or "") < 10:
+        raise ValueError("new password must be at least 10 characters")
+    with db_connect() as conn:
+        row = conn.execute("select password_hash from admins where username = ?", (username,)).fetchone()
+        if not row or not verify_password(current_password or "", row["password_hash"]):
+            raise PermissionError("current password is incorrect")
+        conn.execute("update admins set password_hash = ? where username = ?", (password_hash(new_password), username))
+        if keep_session_token:
+            conn.execute("delete from admin_sessions where username = ? and token != ?", (username, keep_session_token))
+        else:
+            conn.execute("delete from admin_sessions where username = ?", (username,))
+        conn.commit()
+    clear_login_failures("admin", "", username)
+    return True
 
 
 def validate_portal_username(username):
@@ -1400,8 +1468,13 @@ def package_visible_to_user(package, user_id, enforce=None):
     if not enforce:
         return True
     if not user_id:
-        return False
+        visibility = (package.get("Visibility") or package.get("Tool") or "private").lower()
+        tool = (package.get("Tool") or "").lower()
+        return visibility == "public" or tool == "public"
     visibility = (package.get("Visibility") or package.get("Tool") or "private").lower()
+    tool = (package.get("Tool") or "").lower()
+    if visibility == "private" and tool == "public":
+        visibility = "public"
     creator_user_id = package.get("CreatorUserId")
     if visibility == "public":
         return True
@@ -1422,18 +1495,120 @@ def run_openssl(args):
         raise RuntimeError((result.stderr or result.stdout or "openssl failed").strip())
 
 
+P12_CERT_COMPAT_ARGS = [
+    "-certpbe", "PBE-SHA1-3DES",
+    "-macalg", "sha1",
+]
+P12_KEY_COMPAT_ARGS = [
+    *P12_CERT_COMPAT_ARGS,
+    "-keypbe", "PBE-SHA1-3DES",
+]
+
+
+def subject_alt_name_for_host(host):
+    host = (host or "127.0.0.1").strip()
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host):
+        return f"IP:{host}"
+    if ":" in host:
+        return f"IP:{host}"
+    return f"DNS:{host}"
+
+
+def ensure_base_certs():
+    ca_cert = CERT_DIR / "taklite-ca.crt"
+    ca_key = CERT_DIR / "taklite-ca.key"
+    server_csr = CERT_DIR / "taklite-server.csr"
+    server_crt = CERT_DIR / "taklite-server.crt"
+    server_ext = CERT_DIR / "taklite-server.ext"
+    server_name = SERVER_HOST or PUBLIC_HOST or "127.0.0.1"
+
+    CERT_DIR.mkdir(parents=True, exist_ok=True)
+    if not ca_cert.exists() or not ca_key.exists():
+        run_openssl(["genrsa", "-out", str(ca_key), "4096"])
+        run_openssl([
+            "req", "-x509", "-new", "-nodes",
+            "-key", str(ca_key),
+            "-sha256", "-days", "3650",
+            "-out", str(ca_cert),
+            "-subj", "/CN=TAKlite Local CA",
+        ])
+        ca_key.chmod(0o600)
+        ca_cert.chmod(0o644)
+
+    if not HTTPS_CERT.exists() or not HTTPS_KEY.exists():
+        run_openssl(["genrsa", "-out", str(HTTPS_KEY), "3072"])
+        run_openssl([
+            "req", "-new",
+            "-key", str(HTTPS_KEY),
+            "-out", str(server_csr),
+            "-subj", f"/CN={server_name}",
+        ])
+        server_ext.write_text(
+            "\n".join([
+                "authorityKeyIdentifier=keyid,issuer",
+                "basicConstraints=CA:FALSE",
+                "keyUsage = digitalSignature, keyEncipherment",
+                "extendedKeyUsage = serverAuth",
+                f"subjectAltName = {subject_alt_name_for_host(server_name)},DNS:taklite.local",
+                "",
+            ]),
+            encoding="utf-8",
+        )
+        run_openssl([
+            "x509", "-req",
+            "-in", str(server_csr),
+            "-CA", str(ca_cert),
+            "-CAkey", str(ca_key),
+            "-CAcreateserial",
+            "-out", str(server_crt),
+            "-days", "825",
+            "-sha256",
+            "-extfile", str(server_ext),
+        ])
+        HTTPS_CERT.write_bytes(server_crt.read_bytes() + ca_cert.read_bytes())
+        HTTPS_KEY.chmod(0o600)
+        HTTPS_CERT.chmod(0o644)
+
+    ensure_truststore_file()
+    packaged_truststore_file()
+
+
 def ensure_truststore_file():
     ca_cert = CERT_DIR / "taklite-ca.crt"
     ca_key = CERT_DIR / "taklite-ca.key"
-    truststore = CERT_DIR / f"{SERVER_HOST}.p12"
-    tmp_truststore = CERT_DIR / f".{SERVER_HOST}.p12.tmp"
+    truststore = CERT_DIR / "taklite-truststore.p12"
+    tmp_truststore = CERT_DIR / ".taklite-truststore.p12.tmp"
+    holder_key = CERT_DIR / "taklite-truststore-holder.key"
+    holder_csr = CERT_DIR / "taklite-truststore-holder.csr"
+    holder_crt = CERT_DIR / "taklite-truststore-holder.crt"
+    holder_ext = CERT_DIR / "taklite-truststore-holder.ext"
     if not ca_cert.exists() or not ca_key.exists():
         raise RuntimeError("TAKlite CA is missing; rerun the installer or restore taklite-ca.crt/taklite-ca.key")
+    if not holder_crt.exists() or not holder_key.exists():
+        run_openssl(["genrsa", "-out", str(holder_key), "2048"])
+        run_openssl(["req", "-new", "-key", str(holder_key), "-out", str(holder_csr), "-subj", "/CN=taklite-truststore"])
+        holder_ext.write_text("basicConstraints=CA:FALSE\nkeyUsage = digitalSignature, keyEncipherment\n", encoding="utf-8")
+        run_openssl([
+            "x509", "-req",
+            "-in", str(holder_csr),
+            "-CA", str(ca_cert),
+            "-CAkey", str(ca_key),
+            "-CAcreateserial",
+            "-out", str(holder_crt),
+            "-days", "825",
+            "-sha256",
+            "-extfile", str(holder_ext),
+        ])
+        holder_key.chmod(0o600)
+        holder_crt.chmod(0o644)
     run_openssl([
-        "pkcs12", "-export", "-nokeys",
-        "-in", str(ca_cert),
+        "pkcs12", "-export",
+        "-inkey", str(holder_key),
+        "-in", str(holder_crt),
+        "-certfile", str(ca_cert),
         "-out", str(tmp_truststore),
         "-name", "taklite-ca",
+        *P12_KEY_COMPAT_ARGS,
         "-passout", f"pass:{CERT_PASSWORD}",
     ])
     tmp_truststore.replace(truststore)
@@ -1441,12 +1616,24 @@ def ensure_truststore_file():
     return truststore
 
 
-def build_server_pref(connect_string, truststore_name, client_cert_name):
+def packaged_truststore_file():
+    truststore = ensure_truststore_file()
+    truststore_name = f"{safe_profile_name(SERVER_HOST)}.p12"
+    packaged = CERT_DIR / truststore_name
+    if packaged != truststore:
+        tmp_packaged = CERT_DIR / f".{truststore_name}.tmp"
+        tmp_packaged.write_bytes(truststore.read_bytes())
+        tmp_packaged.replace(packaged)
+        packaged.chmod(0o644)
+    return packaged
+
+
+def build_server_pref(connect_string, truststore_name, client_cert_name, description="TAKlite"):
     return f"""<?xml version='1.0' encoding='ASCII' standalone='yes'?>
 <preferences>
   <preference version="1" name="cot_streams">
     <entry key="count" class="class java.lang.Integer">1</entry>
-    <entry key="description0" class="class java.lang.String">TAKlite</entry>
+    <entry key="description0" class="class java.lang.String">{html.escape(description)}</entry>
     <entry key="enabled0" class="class java.lang.Boolean">true</entry>
     <entry key="connectString0" class="class java.lang.String">{html.escape(connect_string)}</entry>
     <entry key="caLocation0" class="class java.lang.String">cert/{html.escape(truststore_name)}</entry>
@@ -1460,26 +1647,11 @@ def build_server_pref(connect_string, truststore_name, client_cert_name):
     <entry key="caPassword" class="class java.lang.String">{html.escape(CERT_PASSWORD)}</entry>
     <entry key="clientPassword" class="class java.lang.String">{html.escape(CERT_PASSWORD)}</entry>
     <entry key="certificateLocation" class="class java.lang.String">cert/{html.escape(client_cert_name)}</entry>
+    <entry key="apiSecureServerPort" class="class java.lang.String">{HTTPS_PUBLIC_PORT}</entry>
+    <entry key="apiUnsecureServerPort" class="class java.lang.String">{HTTP_PUBLIC_PORT}</entry>
   </preference>
 </preferences>
 """
-
-
-def build_server_json_pref(connect_string, truststore_name, client_cert_name):
-    return json.dumps({
-        "name": "PreferenceControl",
-        "version": 1,
-        "takServers": [{
-            "description": "TAKlite",
-            "enabled": True,
-            "connectString": connect_string,
-            "compress": False,
-            "caLocation": f"cert/{truststore_name}",
-            "caPassword": CERT_PASSWORD,
-            "clientPassword": CERT_PASSWORD,
-            "certificateLocation": f"cert/{client_cert_name}",
-        }],
-    }, indent=2)
 
 
 def build_manifest(uid, display_name, truststore_name, client_cert_name):
@@ -1487,13 +1659,13 @@ def build_manifest(uid, display_name, truststore_name, client_cert_name):
   <Configuration>
     <Parameter name="uid" value="{html.escape(uid)}"/>
     <Parameter name="name" value="{html.escape(display_name)}"/>
+    <Parameter name="onReceiveImport" value="true"/>
     <Parameter name="onReceiveDelete" value="true"/>
   </Configuration>
   <Contents>
-    <Content ignore="false" zipEntry="certs\\server.pref"/>
-    <Content ignore="false" zipEntry="certs\\taklite-server.pref"/>
-    <Content ignore="false" zipEntry="certs\\{html.escape(truststore_name)}"/>
-    <Content ignore="false" zipEntry="certs\\{html.escape(client_cert_name)}"/>
+    <Content ignore="false" zipEntry="certs/server.pref"/>
+    <Content ignore="false" zipEntry="certs/{html.escape(truststore_name)}"/>
+    <Content ignore="false" zipEntry="certs/{html.escape(client_cert_name)}"/>
   </Contents>
 </MissionPackageManifest>
 """
@@ -1502,7 +1674,7 @@ def build_manifest(uid, display_name, truststore_name, client_cert_name):
 def create_cert_profile(name, description=""):
     name = safe_profile_name(name)
     description = (description or "").strip()
-    truststore = ensure_truststore_file()
+    truststore = packaged_truststore_file()
     ca_cert = CERT_DIR / "taklite-ca.crt"
     ca_key = CERT_DIR / "taklite-ca.key"
     client_key = CERT_DIR / f"{name}.key"
@@ -1540,18 +1712,18 @@ def create_cert_profile(name, description=""):
         "-certfile", str(ca_cert),
         "-out", str(client_p12),
         "-name", name,
+        *P12_KEY_COMPAT_ARGS,
         "-passout", f"pass:{CERT_PASSWORD}",
     ])
     client_key.chmod(0o600)
     client_p12.chmod(0o644)
 
-    manifest = build_manifest(f"taklite-{name}", f"TAKlite {name}", truststore.name, client_p12.name)
-    server_pref = build_server_pref(connect_string, truststore.name, client_p12.name)
-    json_pref = build_server_json_pref(connect_string, truststore.name, client_p12.name)
+    display_name = f"TAKlite {name}"
+    manifest = build_manifest(f"taklite-{name}", display_name, truststore.name, client_p12.name)
+    server_pref = build_server_pref(connect_string, truststore.name, client_p12.name, display_name)
     with zipfile.ZipFile(dp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.xml", manifest)
+        zf.writestr("MANIFEST/manifest.xml", manifest)
         zf.writestr("certs/server.pref", server_pref)
-        zf.writestr("certs/taklite-server.pref", json_pref)
         zf.write(truststore, f"certs/{truststore.name}")
         zf.write(client_p12, f"certs/{client_p12.name}")
     dp_zip.chmod(0o644)
@@ -1599,6 +1771,7 @@ def delete_cert_profile(profile_id, delete_files=True):
 def server_tls_context(request_client_cert=False):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(str(HTTPS_CERT), str(HTTPS_KEY))
     if request_client_cert and CLIENT_CA.exists():
         context.load_verify_locations(cafile=str(CLIENT_CA))
@@ -1706,6 +1879,28 @@ class CotRelay:
             if sender is not None and not cot_delivery_allowed(sender_user_id, info.get("user_id")):
                 continue
             self.send_to(handler, event)
+
+    def send_to_client_uids(self, event, client_uids=None, send_all=False):
+        requested = set(client_uids or [])
+        with self.lock:
+            handlers = [(handler, dict(info)) for handler, info in self.clients.items()]
+        results = []
+        matched = set()
+        for handler, info in handlers:
+            uid = info.get("uid") or ""
+            if not send_all and uid not in requested:
+                continue
+            if uid:
+                matched.add(uid)
+            sent = self.send_to(handler, event)
+            results.append({
+                "uid": uid,
+                "callsign": info.get("callsign") or "Unknown",
+                "ip": info.get("ip") or "",
+                "sent": sent,
+            })
+        missed = sorted(requested - matched)
+        return {"sent": sum(1 for item in results if item["sent"]), "results": results, "missed": missed}
 
     def heartbeat(self):
         self.broadcast(None, server_status_event())
@@ -2259,19 +2454,25 @@ def parse_multipart_assetfile(ctype, body):
     if not match:
         raise ValueError("multipart boundary missing")
     boundary = ("--" + match.group(1)).encode("utf-8")
+    fallback_file = None
     for part in body.split(boundary):
         part = part.strip(b"\r\n")
         if not part or part == b"--" or b"\r\n\r\n" not in part:
             continue
         raw_headers, content = part.split(b"\r\n\r\n", 1)
         headers = raw_headers.decode("utf-8", "replace")
-        if 'name="assetfile"' not in headers:
-            continue
+        name_match = re.search(r'name="([^"]+)"', headers, re.IGNORECASE)
         filename_match = re.search(r'filename="([^"]*)"', headers)
         filename = filename_match.group(1) if filename_match else None
         if content.endswith(b"\r\n"):
             content = content[:-2]
-        return filename, content
+        field_name = name_match.group(1).lower() if name_match else ""
+        if field_name in ("assetfile", "file", "upload", "data", "content", "contents"):
+            return filename, content
+        if filename and fallback_file is None:
+            fallback_file = (filename, content)
+    if fallback_file is not None:
+        return fallback_file
     raise ValueError("missing multipart field assetfile")
 
 
@@ -2280,8 +2481,6 @@ def validate_datapackage_upload(filename, data):
         raise ValueError("empty upload")
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError(f"datapackage exceeds maximum size of {MAX_UPLOAD_BYTES} bytes")
-    if filename and not filename.lower().endswith((".zip", ".dp.zip")):
-        raise ValueError("datapackage filename must end with .zip or .dp.zip")
     if data[:4] != b"PK\x03\x04" and data[:4] != b"PK\x05\x06" and data[:4] != b"PK\x07\x08":
         raise ValueError("datapackage must be a zip file")
     try:
@@ -2302,12 +2501,13 @@ def upload_datapackage_from_request(handler, qs):
     hash_value = qs.get("hash", [""])[0]
     query_name = qs.get("filename", qs.get("name", [""]))[0]
     creator_uid = qs.get("creatorUid", qs.get("creatoruid", [""]))[0]
+    package_name = normalize_datapackage_name(query_name or filename or f"{hash_value}.dp.zip")
     url = upsert_package(
         hash_value,
-        unquote(query_name or filename or ""),
+        package_name,
         creator_uid,
         data,
-        absolute_base_url(handler),
+        tak_marti_base_url(),
         creator_user_id=creator_user_id,
         visibility="private",
     )
@@ -2328,6 +2528,32 @@ def datapackage_content_row(handler, qs):
         handler.send_json({"error": "package file missing"}, HTTPStatus.NOT_FOUND)
         return None
     return row
+
+
+def send_datapackage_to_clients(payload):
+    hash_value = str(payload.get("hash", "")).strip()
+    if not hash_value:
+        raise ValueError("hash is required")
+    row = find_package(hash_value)
+    if not row:
+        raise ValueError("datapackage not found")
+    package = row_to_package(row)
+    path = Path(row["Path"])
+    if not path.exists():
+        raise ValueError("datapackage file missing")
+    send_all = bool(payload.get("all_clients", False))
+    client_uids = [str(uid).strip() for uid in payload.get("client_uids", []) if str(uid).strip()]
+    if not send_all and not client_uids:
+        raise ValueError("select at least one connected client")
+    result = RELAY.send_to_client_uids(fileshare_event(package), client_uids, send_all=send_all)
+    result.update({
+        "ok": result["sent"] > 0,
+        "package": package,
+        "url": tak_marti_content_url(hash_value),
+    })
+    if not result["ok"]:
+        result["error"] = "no matching connected clients"
+    return result
 
 
 class HttpHandler(BaseHTTPRequestHandler):
@@ -2573,25 +2799,37 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_json({"version": 2, "type": "CitrapList", "data": []})
             return
         if path in ("/Marti/sync/search", "/sync/search"):
-            items = list_packages(self.authenticated_user_id(), ACCESS_CONTROL_ENFORCE)
-            self.send_json({"resultCount": len(items), "results": items})
+            try:
+                items = list_packages(self.authenticated_user_id(), ACCESS_CONTROL_ENFORCE)
+                self.send_json({"resultCount": len(items), "results": items})
+            except Exception as exc:
+                print(f"TAKlite GET {path} failed: {exc}", flush=True)
+                self.send_json({"error": str(exc), "resultCount": 0, "results": []}, HTTPStatus.BAD_REQUEST)
             return
         if path in ("/Marti/sync/missionquery", "/sync/missionquery"):
-            hash_value = qs.get("hash", [""])[0]
-            row = find_package(hash_value)
-            if not row:
-                self.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
-                return
-            if not package_visible_to_request(row, self):
-                self.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
-                return
-            self.send_text(f"{absolute_base_url(self)}/Marti/sync/content?hash={quote(hash_value)}")
+            try:
+                hash_value = qs.get("hash", [""])[0]
+                row = find_package(hash_value)
+                if not row:
+                    self.send_json({"error": "package not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                if not package_visible_to_request(row, self):
+                    self.send_json({"error": "package not allowed"}, HTTPStatus.FORBIDDEN)
+                    return
+                self.send_text(tak_marti_content_url(hash_value))
+            except Exception as exc:
+                print(f"TAKlite GET {path} failed: {exc}", flush=True)
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         if path in ("/Marti/sync/content", "/sync/content"):
-            row = datapackage_content_row(self, qs)
-            if not row:
-                return
-            self.send_file(Path(row["Path"]), row["Name"])
+            try:
+                row = datapackage_content_row(self, qs)
+                if not row:
+                    return
+                self.send_file(Path(row["Path"]), row["Name"])
+            except Exception as exc:
+                print(f"TAKlite GET {path} failed: {exc}", flush=True)
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         if path == "/certs/taklite-truststore.p12":
             truststore = CERT_DIR / "taklite-truststore.p12"
@@ -2634,7 +2872,7 @@ class HttpHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             tls_enabled = HTTPS_CERT.exists() and HTTPS_KEY.exists()
-            self.send_json({"ok": True, "version": VERSION, "cot_port": COT_PORT, "cot_tls_port": COT_TLS_PORT if tls_enabled else None, "http_port": HTTP_PORT, "https_port": HTTPS_PORT if tls_enabled else None, "clients": len(RELAY.snapshot()), "packages": len(list_packages()), "auth_enabled": bool(ADMIN_TOKEN), "access_enforcement": ACCESS_CONTROL_ENFORCE})
+            self.send_json({"ok": True, "version": VERSION, "cot_port": COT_PORT, "cot_tls_port": COT_TLS_PORT if tls_enabled else None, "http_port": HTTP_PORT, "https_port": HTTPS_PORT if tls_enabled else None, "clients": len(RELAY.snapshot()), "packages": len(list_packages(enforce=False)), "auth_enabled": bool(ADMIN_TOKEN), "access_enforcement": ACCESS_CONTROL_ENFORCE})
             return
         if path == "/api/system-health":
             if not self.require_auth():
@@ -2662,7 +2900,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         if path == "/api/datapackages":
             if not self.require_auth():
                 return
-            self.send_json({"items": list_packages()})
+            self.send_json({"items": list_packages(enforce=False)})
             return
         if path == "/api/clients":
             if not self.require_auth():
@@ -2768,6 +3006,21 @@ class HttpHandler(BaseHTTPRequestHandler):
                         conn.commit()
                 self.send_json({"ok": True})
                 return
+            if path == "/api/admin/password":
+                token = self.headers.get("X-Session-Token", "")
+                username = validate_session(token)
+                if not username:
+                    self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                payload = self.read_json()
+                current_password = payload.get("current_password", "")
+                new_password = payload.get("new_password", "")
+                confirm_password = payload.get("confirm_password", "")
+                if new_password != confirm_password:
+                    raise ValueError("new passwords do not match")
+                change_admin_password(username, current_password, new_password, token)
+                self.send_json({"ok": True, "username": username, "message": "admin password changed"})
+                return
             if path == "/api/connect/login":
                 payload = self.read_json()
                 remote = self.client_address[0]
@@ -2808,6 +3061,12 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
             if path in ("/Marti/sync/missionupload", "/sync/missionupload", "/Marti/sync/upload", "/sync/upload", "/Marti/sync/content", "/sync/content"):
                 upload_datapackage_from_request(self, qs)
+                return
+            if path == "/api/datapackages/send":
+                if not self.require_auth():
+                    return
+                result = send_datapackage_to_clients(self.read_json())
+                self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
             if path == "/api/datapackages/delete":
                 if not self.require_auth():
@@ -2976,6 +3235,7 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
+            print(f"TAKlite POST {path} failed: {exc}", flush=True)
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def do_PUT(self):
@@ -2989,6 +3249,7 @@ class HttpHandler(BaseHTTPRequestHandler):
             try:
                 upload_datapackage_from_request(self, qs)
             except Exception as exc:
+                print(f"TAKlite PUT {path} failed: {exc}", flush=True)
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         match = re.match(r"^/(?:Marti/)?api/sync/metadata/([^/]+)/tool$", path)
@@ -2998,8 +3259,12 @@ class HttpHandler(BaseHTTPRequestHandler):
         hash_value = unquote(match.group(1))
         length = int(self.headers.get("Content-Length", "0") or "0")
         tool = self.rfile.read(length).decode("utf-8", "replace").strip() or "public"
+        visibility = tool.lower() if tool.lower() in ("public", "private") else None
         with db_connect() as conn:
-            conn.execute("update datapackages set Tool = ? where Hash = ?", (tool, hash_value))
+            if visibility:
+                conn.execute("update datapackages set Tool = ?, Visibility = ? where Hash = ?", (tool, visibility, hash_value))
+            else:
+                conn.execute("update datapackages set Tool = ? where Hash = ?", (tool, hash_value))
             conn.commit()
         self.send_text("OK")
 
@@ -3091,6 +3356,8 @@ check();
 def main():
     if not CERT_PASSWORD:
         raise RuntimeError("TAKLITE_CERT_PASSWORD is required")
+    if AUTO_INIT_CERTS:
+        ensure_base_certs()
     init_db()
     cot_server = CotServer((COT_BIND, COT_PORT), CotHandler, "tcp")
     http_server = ThreadingHTTPServer((HTTP_BIND, HTTP_PORT), HttpHandler)

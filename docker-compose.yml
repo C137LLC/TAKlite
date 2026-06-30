@@ -10,7 +10,7 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    user: "10001:10001"
+    user: "${TAKLITE_CONTAINER_USER:-10001:10001}"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -28,6 +28,7 @@ services:
       TAKLITE_HTTPS_CERT: "/certs/taklite.crt"
       TAKLITE_HTTPS_KEY: "/certs/taklite.key"
       TAKLITE_CLIENT_CA: "/certs/taklite-ca.crt"
+      TAKLITE_AUTO_INIT_CERTS: "${TAKLITE_AUTO_INIT_CERTS:-false}"
       TAKLITE_COT_BIND: "0.0.0.0"
       TAKLITE_COT_PORT: "58087"
       TAKLITE_COT_PUBLIC_PORT: "${TAKLITE_COT_HOST_PORT:-58087}"
@@ -41,7 +42,7 @@ services:
       TAKLITE_DB: "/data/taklite.sqlite3"
       TAKLITE_PACKAGE_DIR: "/packages"
       TAKLITE_STATIC_DIR: "/app/static"
-      TAKLITE_WGDASHBOARD_URL: "${TAKLITE_WGDASHBOARD_URL:-http://10.66.66.1:10086}"
+      TAKLITE_WGDASHBOARD_URL: "${TAKLITE_WGDASHBOARD_URL-http://10.66.66.1:10086}"
       TAKLITE_MAX_UPLOAD_BYTES: "${TAKLITE_MAX_UPLOAD_BYTES:-268435456}"
       TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT: "${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT:-true}"
       TAKLITE_ALLOW_LEGACY_CLIENT_CERT: "${TAKLITE_ALLOW_LEGACY_CLIENT_CERT:-false}"

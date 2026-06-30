@@ -32,6 +32,8 @@ VPN-only:
 - `58087/tcp` plain CoT TCP
 - `8089/tcp` TLS CoT TCP
 
+Portable Docker mode is different. It runs TAKlite only and does not install WireGuard, WGDashboard, fail2ban, systemd services, or firewall rules. Use portable mode for local testing or when VPN/firewall are handled outside TAKlite.
+
 ## Per-Install Security
 
 Every fresh VPS installation generates new security material.
@@ -58,7 +60,7 @@ The installer saves root-only recovery notes here:
 
 ## Fresh VPS Install
 
-Create a fresh Ubuntu 26.04 LTS x64 VPS.
+Create a fresh supported Linux VPS. Supported full-appliance targets include Ubuntu 22.04 LTS or newer, Debian 12 Bookworm or newer, and Raspberry Pi OS 64-bit Bookworm or newer. See [Platform Support](platform-support.md).
 
 Option A, deploy from a GitHub clone:
 
@@ -93,6 +95,18 @@ chmod +x install.sh smoke-test.sh
 ```
 
 Use the defaults unless the VPS environment requires different values.
+
+For local Docker Desktop testing instead of a VPS:
+
+```bash
+./portable-start.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+.\portable-start.ps1
+```
 
 Important defaults:
 
