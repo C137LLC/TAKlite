@@ -132,18 +132,39 @@ ipv4_prefix24() {
 install_packages() {
   log "Installing VPS packages"
   apt-get update
-  local compose_package=""
-  for candidate in docker-compose-plugin docker-compose-v2; do
-    if apt-cache show "${candidate}" >/dev/null 2>&1; then
-      compose_package="${candidate}"
-      break
-    fi
-  done
-  [[ -n "${compose_package}" ]] || die "could not find a Docker Compose v2 package in apt; expected docker-compose-plugin or docker-compose-v2"
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
-    python3-venv qrencode rsync util-linux wireguard-tools docker.io openssl zip "${compose_package}"
+    python3-venv qrencode rsync util-linux wireguard-tools openssl zip
+
+  if command -v docker >/dev/null 2>&1; then
+    log "Existing Docker install detected; reusing it"
+  else
+    local docker_packages=()
+    if apt-cache show docker-ce >/dev/null 2>&1; then
+      docker_packages=(docker-ce docker-ce-cli containerd.io)
+    elif apt-cache show docker.io >/dev/null 2>&1; then
+      docker_packages=(docker.io)
+    else
+      die "could not find a Docker Engine package in apt; install Docker Engine first and rerun install.sh"
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${docker_packages[@]}"
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    log "Existing Docker Compose v2 detected; reusing it"
+  else
+    local compose_package=""
+    for candidate in docker-compose-plugin docker-compose-v2; do
+      if apt-cache show "${candidate}" >/dev/null 2>&1; then
+        compose_package="${candidate}"
+        break
+      fi
+    done
+    [[ -n "${compose_package}" ]] || die "could not find a Docker Compose v2 package in apt; expected docker-compose-plugin or docker-compose-v2"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${compose_package}"
+  fi
+
   systemctl enable --now docker
   systemctl enable --now fail2ban
   ensure_docker_compose

@@ -1,6 +1,6 @@
 # TAKlite Start-To-Finish Setup Guide
 
-Version: TAKlite v0.2.15
+Version: TAKlite v0.2.16
 
 Audience: new TAKlite administrators standing up a fresh VPS.
 
@@ -820,7 +820,7 @@ Expected health output includes:
 
 ```text
 "ok": true
-"version": "TAKlite 0.2.15"
+"version": "TAKlite 0.2.16"
 "auth_enabled": true
 ```
 

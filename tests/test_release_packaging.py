@@ -43,6 +43,12 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_GUI_UPDATE_REQUEST_DIR=/data/gui-update", installer)
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR=/data/settings", installer)
         self.assertIn("TAKLITE_FIREWALL_REQUEST_DIR=/data/firewall", installer)
+        self.assertIn('if command -v docker >/dev/null 2>&1; then', installer)
+        self.assertIn('log "Existing Docker install detected; reusing it"', installer)
+        self.assertIn("docker-ce docker-ce-cli containerd.io", installer)
+        self.assertIn("docker_packages=(docker.io)", installer)
+        self.assertIn('if docker compose version >/dev/null 2>&1; then', installer)
+        self.assertIn('log "Existing Docker Compose v2 detected; reusing it"', installer)
 
         updater = (ROOT / "update.sh").read_text()
         append_start = updater.index("append_env_default() {")
