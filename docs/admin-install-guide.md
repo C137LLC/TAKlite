@@ -44,12 +44,17 @@ Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `taklite/certs`, `taklite/
 
 ## Upload TAKlite
 
-Option A, deploy from a GitHub clone:
+Option A, deploy directly from a GitHub clone while logged into the VPS shell as `root`:
 
 ```bash
-git clone https://github.com/C137LLC/TAKlite.git
-cd taklite
-scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
+cd /root
+apt-get update
+apt-get install -y git
+rm -rf /root/taklite
+git clone https://github.com/C137LLC/TAKlite.git /root/taklite
+cd /root/taklite
+chmod +x install.sh smoke-test.sh
+./install.sh
 ```
 
 Option B, deploy from a release zip:

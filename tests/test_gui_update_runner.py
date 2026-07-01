@@ -111,7 +111,7 @@ class GuiUpdateRunnerTests(unittest.TestCase):
 
         status = service.latest_release_status(refresh=True)
 
-        self.assertEqual(status["current_tag"], "v0.2.17")
+        self.assertEqual(status["current_tag"], "v0.2.18")
         self.assertTrue(status["gui_runner_enabled"])
         self.assertFalse(status["update_available"])
         self.assertTrue(status["check_error"])

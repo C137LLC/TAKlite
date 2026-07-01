@@ -62,17 +62,14 @@ The installer saves root-only recovery notes here:
 
 Create a fresh supported Linux VPS. Supported full-appliance targets include Ubuntu 22.04 LTS or newer, Debian 12 Bookworm or newer, and Raspberry Pi OS 64-bit Bookworm or newer. See [Platform Support](platform-support.md).
 
-Option A, deploy from a GitHub clone:
+Option A, deploy directly from a GitHub clone while logged into the VPS shell as `root`:
 
 ```bash
-git clone https://github.com/C137LLC/TAKlite.git
-cd taklite
-scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
-```
-
-On the VPS:
-
-```bash
+cd /root
+apt-get update
+apt-get install -y git
+rm -rf /root/taklite
+git clone https://github.com/C137LLC/TAKlite.git /root/taklite
 cd /root/taklite
 chmod +x install.sh smoke-test.sh
 ./install.sh

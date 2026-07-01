@@ -112,6 +112,25 @@ ensure_docker_compose() {
   die "Docker Compose v2 was not found after package install. Install docker-compose-plugin/docker-compose-v2 for this distro and rerun install.sh."
 }
 
+apt_package_available() {
+  local package="$1"
+  apt-cache policy "${package}" 2>/dev/null | awk '
+    $1 == "Candidate:" && $2 != "(none)" {
+      found = 1
+    }
+    END {
+      exit found ? 0 : 1
+    }
+  '
+}
+
+apt_packages_available() {
+  local package
+  for package in "$@"; do
+    apt_package_available "${package}" || return 1
+  done
+}
+
 detect_public_endpoint() {
   local endpoint=""
   endpoint="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
@@ -141,9 +160,9 @@ install_packages() {
     log "Existing Docker install detected; reusing it"
   else
     local docker_packages=()
-    if apt-cache show docker-ce >/dev/null 2>&1; then
+    if apt_packages_available docker-ce docker-ce-cli containerd.io; then
       docker_packages=(docker-ce docker-ce-cli containerd.io)
-    elif apt-cache show docker.io >/dev/null 2>&1; then
+    elif apt_package_available docker.io; then
       docker_packages=(docker.io)
     else
       die "could not find a Docker Engine package in apt; install Docker Engine first and rerun install.sh"
@@ -156,7 +175,7 @@ install_packages() {
   else
     local compose_package=""
     for candidate in docker-compose-plugin docker-compose-v2; do
-      if apt-cache show "${candidate}" >/dev/null 2>&1; then
+      if apt_package_available "${candidate}"; then
         compose_package="${candidate}"
         break
       fi

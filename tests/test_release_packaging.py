@@ -47,6 +47,8 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_FIREWALL_REQUEST_DIR=/data/firewall", installer)
         self.assertIn('if command -v docker >/dev/null 2>&1; then', installer)
         self.assertIn('log "Existing Docker install detected; reusing it"', installer)
+        self.assertIn("apt_package_available() {", installer)
+        self.assertIn("apt_packages_available docker-ce docker-ce-cli containerd.io", installer)
         self.assertIn("docker-ce docker-ce-cli containerd.io", installer)
         self.assertIn("docker_packages=(docker.io)", installer)
         self.assertIn('if docker compose version >/dev/null 2>&1; then', installer)

@@ -51,17 +51,14 @@ Do not expose TAKlite, WGDashboard, CoT, or datapackage ports publicly. They are
 
 ## Full VPS Install
 
-From your admin computer:
+SSH into the VPS as `root`, then run:
 
 ```bash
-git clone https://github.com/C137LLC/TAKlite.git
-cd taklite
-scp -r . root@YOUR_VPS_PUBLIC_IP:/root/taklite
-```
-
-On the VPS:
-
-```bash
+cd /root
+apt-get update
+apt-get install -y git
+rm -rf /root/taklite
+git clone https://github.com/C137LLC/TAKlite.git /root/taklite
 cd /root/taklite
 chmod +x install.sh smoke-test.sh
 ./install.sh
