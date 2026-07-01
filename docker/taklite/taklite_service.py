@@ -979,6 +979,17 @@ def set_policy_link(source_group_id, target_group_id, can_see=False, can_send=Fa
     return row_to_policy_link(row) if row else {"source_group_id": source_group_id, "target_group_id": target_group_id, "can_see": False, "can_send": False}
 
 
+def access_policy_active():
+    with db_connect() as conn:
+        row = conn.execute("""
+            select
+              (select count(*) from portal_users where role_id is not null and revoked_at is null) as assigned_roles,
+              (select count(*) from access_user_groups) as group_memberships,
+              (select count(*) from access_policy_links) as group_links
+        """).fetchone()
+    return any(int(row[key] or 0) > 0 for key in row.keys())
+
+
 def subject_policy(user_id):
     with db_connect() as conn:
         row = conn.execute("""
@@ -1008,6 +1019,8 @@ def can_subject_action(viewer_id, target_id, action):
     target = subject_policy(target_id)
     if not viewer or not target:
         return False
+    if not access_policy_active():
+        return True
     if viewer[f"can_{action}_all"]:
         return True
     if viewer[f"can_{action}_own_groups"] and viewer["groups"] & target["groups"]:
@@ -1043,6 +1056,8 @@ def access_summary():
         "roles": list_access_roles(),
         "groups": list_access_groups(),
         "links": list_policy_links(),
+        "policy_active": access_policy_active(),
+        "open_default": ACCESS_CONTROL_ENFORCE and not access_policy_active(),
     }
 
 
@@ -1084,6 +1099,8 @@ def access_preview(user_id):
         "seen_by": seen_by,
         "senders": senders,
         "enforced": ACCESS_CONTROL_ENFORCE,
+        "policy_active": access_policy_active(),
+        "open_default": ACCESS_CONTROL_ENFORCE and not access_policy_active(),
     }
 
 
@@ -1582,6 +1599,8 @@ def package_visible_to_user(package, user_id, enforce=None):
         visibility = (package.get("Visibility") or package.get("Tool") or "private").lower()
         tool = (package.get("Tool") or "").lower()
         return visibility == "public" or tool == "public"
+    if not access_policy_active():
+        return True
     visibility = (package.get("Visibility") or package.get("Tool") or "private").lower()
     tool = (package.get("Tool") or "").lower()
     if visibility == "private" and tool == "public":

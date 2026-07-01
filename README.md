@@ -246,6 +246,8 @@ Optional admin 2FA can be enabled from Settings after the first admin account is
 - [User Guide](docs/user-guide.md)
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
+- [Access Control Guide](docs/access-control-guide.md)
+- [Access Control Guide PDF](docs/TAKlite-Access-Control-Guide.pdf)
 - [Deployment And Update Lifecycle](docs/deployment-lifecycle.md)
 - [Backup And Restore](docs/backup-restore.md)
 - [Dependency Update Checklist](docs/dependency-update-checklist.md)

@@ -59,6 +59,37 @@ class AccessControlTests(unittest.TestCase):
         self.assertTrue(self.service.can_subject_see(alpha_one["id"], beacon_one["id"]))
         self.assertFalse(self.service.can_subject_send(alpha_one["id"], beacon_one["id"]))
 
+    def test_unassigned_users_are_open_when_no_policy_is_assigned(self):
+        alpha_one = self.service.create_policy_subject("alpha-one")
+        bravo_one = self.service.create_policy_subject("bravo-one")
+
+        self.assertFalse(self.service.access_policy_active())
+        self.assertTrue(self.service.can_subject_see(alpha_one["id"], bravo_one["id"]))
+        self.assertTrue(self.service.can_subject_send(alpha_one["id"], bravo_one["id"]))
+        self.assertTrue(self.service.can_subject_see(bravo_one["id"], alpha_one["id"]))
+        self.assertTrue(self.service.cot_delivery_allowed(alpha_one["id"], bravo_one["id"], enforce=True))
+
+        package = {"CreatorUserId": alpha_one["id"], "Tool": "private"}
+        self.assertTrue(self.service.package_visible_to_user(package, bravo_one["id"], enforce=True))
+
+        preview = self.service.access_preview(alpha_one["id"])
+        self.assertFalse(preview["policy_active"])
+        self.assertTrue(preview["open_default"])
+        self.assertEqual({item["username"] for item in preview["can_see"]}, {"alpha-one", "bravo-one"})
+
+    def test_access_policy_becomes_active_after_membership_assignment(self):
+        participant = self.service.create_access_role("Participant", can_see_own_groups=True, can_send_own_groups=True)
+        alpha = self.service.create_access_group("Alpha")
+        alpha_one = self.service.create_policy_subject("alpha-one", role_id=participant["id"], group_ids=[alpha["id"]])
+        bravo_one = self.service.create_policy_subject("bravo-one")
+
+        self.assertTrue(self.service.access_policy_active())
+        self.assertFalse(self.service.can_subject_see(alpha_one["id"], bravo_one["id"]))
+        self.assertFalse(self.service.can_subject_send(alpha_one["id"], bravo_one["id"]))
+
+        package = {"CreatorUserId": alpha_one["id"], "Tool": "private"}
+        self.assertFalse(self.service.package_visible_to_user(package, bravo_one["id"], enforce=True))
+
     def test_admin_api_creates_roles_and_groups(self):
         self.service.create_admin("admin", "password1234")
         session = self.service.create_session("admin")
