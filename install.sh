@@ -55,7 +55,7 @@ detect_os() {
   OS_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 
   case "${OS_ARCH}" in
-    amd64|arm64|aarch64)
+    amd64|x86_64|arm64|aarch64)
       ;;
     *)
       die "unsupported CPU architecture ${OS_ARCH}; supported: amd64/x86_64 and arm64/aarch64"
@@ -64,28 +64,25 @@ detect_os() {
 
   case "${OS_ID}" in
     ubuntu)
-      case "${OS_VERSION_ID%%.*}" in
-        22|24|26|27|28) ;;
-        *) die "unsupported Ubuntu version ${OS_VERSION_ID}; use Ubuntu 22.04 LTS or newer" ;;
-      esac
+      if [[ "${OS_VERSION_ID%%.*}" =~ ^[0-9]+$ ]] && (( ${OS_VERSION_ID%%.*} < 22 )); then
+        log "Ubuntu ${OS_VERSION_ID} is older than the recommended Ubuntu 22.x baseline; continuing in best-effort mode"
+      fi
       ;;
     debian)
-      case "${OS_VERSION_ID%%.*}" in
-        12|13|14) ;;
-        *) die "unsupported Debian version ${OS_VERSION_ID}; use Debian 12 Bookworm or newer" ;;
-      esac
+      if [[ "${OS_VERSION_ID%%.*}" =~ ^[0-9]+$ ]] && (( ${OS_VERSION_ID%%.*} < 12 )); then
+        log "Debian ${OS_VERSION_ID} is older than the recommended Debian 12 baseline; continuing in best-effort mode"
+      fi
       ;;
     raspbian)
-      case "${OS_VERSION_ID%%.*}" in
-        12|13|14) ;;
-        *) die "unsupported Raspberry Pi OS version ${OS_VERSION_ID}; use 64-bit Bookworm or newer" ;;
-      esac
+      if [[ "${OS_VERSION_ID%%.*}" =~ ^[0-9]+$ ]] && (( ${OS_VERSION_ID%%.*} < 12 )); then
+        log "Raspberry Pi OS ${OS_VERSION_ID} is older than the recommended 64-bit Bookworm baseline; continuing in best-effort mode"
+      fi
       ;;
     *)
       if [[ " ${OS_ID_LIKE} " == *" debian "* ]]; then
         log "Detected Debian-like host ${OS_PRETTY_NAME}; continuing in best-effort mode"
       else
-        die "this installer targets Ubuntu 22.04+, Debian 12+, and Raspberry Pi OS 64-bit Bookworm+; detected ${OS_PRETTY_NAME}"
+        log "Detected non-Debian Linux host ${OS_PRETTY_NAME}; continuing in best-effort mode"
       fi
       ;;
   esac
@@ -94,7 +91,6 @@ detect_os() {
 }
 
 preflight_host() {
-  command -v apt-get >/dev/null 2>&1 || die "apt-get is required for the full VPS installer"
   command -v systemctl >/dev/null 2>&1 || die "systemd is required for WireGuard, WGDashboard, and TAKlite host runners"
   [[ -e /dev/net/tun ]] || die "/dev/net/tun is missing; enable TUN/TAP support on this VPS/container host"
   if [[ "${OS_ARCH}" == "arm64" || "${OS_ARCH}" == "aarch64" ]]; then
@@ -131,6 +127,17 @@ apt_packages_available() {
   done
 }
 
+require_commands() {
+  local missing=()
+  local command_name
+  for command_name in "$@"; do
+    command -v "${command_name}" >/dev/null 2>&1 || missing+=("${command_name}")
+  done
+  if (( ${#missing[@]} )); then
+    die "missing required command(s): ${missing[*]}; install host dependencies for this Linux distribution and rerun install.sh"
+  fi
+}
+
 detect_public_endpoint() {
   local endpoint=""
   endpoint="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
@@ -149,44 +156,49 @@ ipv4_prefix24() {
 }
 
 install_packages() {
-  log "Installing VPS packages"
-  apt-get update
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing VPS packages with apt"
+    apt-get update
 
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
-    python3-venv qrencode rsync util-linux wireguard-tools openssl zip
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      ca-certificates curl fail2ban git iproute2 iptables net-tools python3 python3-pip \
+      python3-venv qrencode rsync util-linux wireguard-tools openssl zip
 
-  if command -v docker >/dev/null 2>&1; then
-    log "Existing Docker install detected; reusing it"
-  else
-    local docker_packages=()
-    if apt_packages_available docker-ce docker-ce-cli containerd.io; then
-      docker_packages=(docker-ce docker-ce-cli containerd.io)
-    elif apt_package_available docker.io; then
-      docker_packages=(docker.io)
+    if command -v docker >/dev/null 2>&1; then
+      log "Existing Docker install detected; reusing it"
     else
-      die "could not find a Docker Engine package in apt; install Docker Engine first and rerun install.sh"
-    fi
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${docker_packages[@]}"
-  fi
-
-  if docker compose version >/dev/null 2>&1; then
-    log "Existing Docker Compose v2 detected; reusing it"
-  else
-    local compose_package=""
-    for candidate in docker-compose-plugin docker-compose-v2; do
-      if apt_package_available "${candidate}"; then
-        compose_package="${candidate}"
-        break
+      local docker_packages=()
+      if apt_packages_available docker-ce docker-ce-cli containerd.io; then
+        docker_packages=(docker-ce docker-ce-cli containerd.io)
+      elif apt_package_available docker.io; then
+        docker_packages=(docker.io)
+      else
+        die "could not find a Docker Engine package in apt; install Docker Engine first and rerun install.sh"
       fi
-    done
-    [[ -n "${compose_package}" ]] || die "could not find a Docker Compose v2 package in apt; expected docker-compose-plugin or docker-compose-v2"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${compose_package}"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "${docker_packages[@]}"
+    fi
+
+    if docker compose version >/dev/null 2>&1; then
+      log "Existing Docker Compose v2 detected; reusing it"
+    else
+      local compose_package=""
+      for candidate in docker-compose-plugin docker-compose-v2; do
+        if apt_package_available "${candidate}"; then
+          compose_package="${candidate}"
+          break
+        fi
+      done
+      [[ -n "${compose_package}" ]] || die "could not find a Docker Compose v2 package in apt; expected docker-compose-plugin or docker-compose-v2"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "${compose_package}"
+    fi
+  else
+    log "apt-get not found; assuming host dependencies were installed manually for ${OS_PRETTY_NAME}"
   fi
 
+  require_commands curl fail2ban-client git ip iptables python3 qrencode rsync wg wg-quick openssl zip docker
+  ensure_docker_compose
   systemctl enable --now docker
   systemctl enable --now fail2ban
-  ensure_docker_compose
 }
 
 collect_settings() {

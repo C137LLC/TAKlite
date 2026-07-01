@@ -104,6 +104,15 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKlite auth failure scope=", installer)
         self.assertIn("/var/lib/docker/containers/*/*.log", installer)
 
+    def test_installer_uses_capability_based_linux_gate(self):
+        installer = (ROOT / "install.sh").read_text()
+
+        self.assertIn("continuing in best-effort mode", installer)
+        self.assertIn("apt-get not found; assuming host dependencies were installed manually", installer)
+        self.assertIn("require_commands curl fail2ban-client git ip iptables python3 qrencode rsync wg wg-quick openssl zip docker", installer)
+        self.assertNotIn("22|24|26", installer)
+        self.assertNotIn("unsupported Ubuntu version", installer)
+
     def test_portable_desktop_assets_are_packaged(self):
         env_desktop = (ROOT / ".env.desktop.example").read_text()
         portable_sh = ROOT / "portable-start.sh"

@@ -32,7 +32,8 @@ It can run in two modes:
 
 Full VPS appliance:
 
-- Fresh Ubuntu 22.04+ or Debian 12+ VPS, `amd64` or `arm64`
+- Linux VPS or server with `systemd`, TUN, Docker Compose v2, WireGuard tools, `iptables`, and fail2ban
+- Automatic dependency install is supported on apt-based hosts such as Ubuntu 22.x+ and Debian 12+
 - Raspberry Pi OS 64-bit Bookworm+ for Pi deployments
 - Root SSH access for initial setup
 - Cloud firewall/security group control

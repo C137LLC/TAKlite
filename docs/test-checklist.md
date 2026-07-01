@@ -2,7 +2,7 @@
 
 ## VPS Install
 
-- VPS is Ubuntu 26.04 LTS x64
+- VPS is a supported Linux host with systemd, TUN, Docker Compose v2, WireGuard tools, iptables, and fail2ban
 
 - Upload `taklite-vps-bundle`
 - Run `sudo ./install.sh`

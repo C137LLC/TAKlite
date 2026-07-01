@@ -19,26 +19,26 @@ Run:
 sudo ./install.sh
 ```
 
-Supported targets:
+Recommended targets:
 
 ```text
-Ubuntu 22.04 LTS or newer, amd64 or arm64
-Ubuntu 24.04 LTS, amd64 or arm64
-Ubuntu 26.04 LTS, amd64 or arm64
+Ubuntu 22.x or newer, including LTS and interim releases, amd64/x86_64 or arm64/aarch64
 Debian 12 Bookworm or newer, amd64 or arm64
 Debian 13 Trixie, amd64 or arm64
 Raspberry Pi OS 64-bit Bookworm or newer
 ```
 
+The installer is intentionally capability-based instead of locked to one distro list. Other Linux distributions can work when the required host features and commands are already installed. On apt-based systems TAKlite installs dependencies automatically. On non-apt systems, install the required host dependencies first, then rerun `install.sh`.
+
 Required host features:
 
 - `systemd`
-- `apt`
 - `/dev/net/tun`
 - Docker Engine
 - Docker Compose v2
 - `wireguard-tools`
 - `iptables`
+- `fail2ban`
 - outbound internet access during install
 
 Unsupported for full appliance mode:
