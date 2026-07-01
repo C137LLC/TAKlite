@@ -1330,7 +1330,7 @@ function AccessPanel({ users, access, session, load, setStatus }) {
         <RolesTable roles={roles} session={session} load={load} setStatus={setStatus} />
       </Panel>
       <Panel title="Groups" icon={Users}>
-        <PanelHint>Use groups for teams or visibility buckets such as Alpha, Bravo, Admin, or Rabbit.</PanelHint>
+        <PanelHint>Use groups for teams or visibility buckets such as Alpha, Bravo, Admin, or Beacon.</PanelHint>
         <CreateGroup session={session} load={load} setStatus={setStatus} />
         <GroupsTable groups={groups} session={session} load={load} setStatus={setStatus} />
       </Panel>

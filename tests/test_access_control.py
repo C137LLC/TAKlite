@@ -187,21 +187,21 @@ class AccessControlTests(unittest.TestCase):
         student = self.service.create_access_role("Student", can_see_own_groups=True, can_send_own_groups=True)
         hidden = self.service.create_access_role("Hidden", can_see_own_groups=False, can_send_own_groups=False)
         alpha = self.service.create_access_group("Alpha")
-        rabbit = self.service.create_access_group("Rabbit")
+        beacon = self.service.create_access_group("Beacon")
 
         lead = self.service.create_policy_subject("lead", role_id=admin["id"], group_ids=[])
         alpha_one = self.service.create_policy_subject("alpha-one", role_id=student["id"], group_ids=[alpha["id"]])
         alpha_two = self.service.create_policy_subject("alpha-two", role_id=student["id"], group_ids=[alpha["id"]])
-        rabbit_one = self.service.create_policy_subject("rabbit-one", role_id=hidden["id"], group_ids=[rabbit["id"]])
+        beacon_one = self.service.create_policy_subject("beacon-one", role_id=hidden["id"], group_ids=[beacon["id"]])
 
         alpha_preview = self.service.access_preview(alpha_one["id"])
-        rabbit_preview = self.service.access_preview(rabbit_one["id"])
+        beacon_preview = self.service.access_preview(beacon_one["id"])
 
         self.assertEqual({item["username"] for item in alpha_preview["can_see"]}, {"alpha-one", "alpha-two"})
         self.assertNotIn("lead", {item["username"] for item in alpha_preview["can_see"]})
-        self.assertNotIn("rabbit-one", {item["username"] for item in alpha_preview["can_see"]})
-        self.assertEqual({item["username"] for item in rabbit_preview["can_see"]}, {"rabbit-one"})
-        self.assertIn("lead", {item["username"] for item in rabbit_preview["seen_by"]})
+        self.assertNotIn("beacon-one", {item["username"] for item in alpha_preview["can_see"]})
+        self.assertEqual({item["username"] for item in beacon_preview["can_see"]}, {"beacon-one"})
+        self.assertIn("lead", {item["username"] for item in beacon_preview["seen_by"]})
 
     def test_runtime_health_reports_database_and_storage(self):
         health = self.service.runtime_health()

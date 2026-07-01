@@ -1,6 +1,6 @@
 # TAKlite Access Control Guide
 
-Version: TAKlite v0.2.18
+Version: TAKlite v0.2.19
 
 ## Purpose
 
@@ -82,7 +82,7 @@ A group is a team, class, cell, or visibility bucket. Examples:
 - Bravo
 - Charlie
 - Staff
-- Rabbit
+- Beacon
 
 Groups are not permission levels by themselves. They are membership buckets. The permissions come from a user's role and from links between groups.
 
@@ -164,7 +164,7 @@ Can send assigned groups: Optional
 Notes:
 
 - Admins do not need to be placed in every group.
-- Admins can see isolated groups such as Rabbit even if Rabbit cannot see anyone.
+- Admins can see isolated groups such as Beacon even if Beacon cannot see anyone.
 - Other users do not see admins unless their own role/group/link settings allow it.
 
 ### Team Member Role
@@ -207,7 +207,7 @@ Can send assigned groups: Off
 
 Notes:
 
-- This is useful for Rabbit, role-player, hidden target, or evaluator profiles.
+- This is useful for Beacon, role-player, hidden target, or evaluator profiles.
 - Admins with "Can see everyone" can still see isolated users.
 - Isolated users will not see admins unless you intentionally give them visibility.
 
@@ -232,23 +232,23 @@ Use a Staff or Admin group only when you want staff to see each other through no
 
 Admins do not need to be in a Staff group to see everyone if their role already has "Can see everyone."
 
-### Rabbit Or Hidden Group
+### Beacon Or Hidden Group
 
-Use a Rabbit group for users who should be visible to admins but hidden from students.
+Use a Beacon group for users who should be visible to admins but hidden from students.
 
 Recommended:
 
 ```text
-Rabbit users:
+Beacon users:
   Role: Isolated
-  Group: Rabbit
+  Group: Beacon
 
 Admin users:
   Role: Admin or Instructor
   Group: optional
 ```
 
-Do not link Rabbit to student groups unless students should see Rabbit.
+Do not link Beacon to student groups unless students should see Beacon.
 
 ## How Visibility Is Decided
 
@@ -491,14 +491,14 @@ Preview:
 - An Alpha user should list Bravo users under Can See and Can Send To.
 - A Bravo user should not list Alpha users unless another role or group rule allows it.
 
-## Example 4: Rabbit Group
+## Example 4: Beacon Group
 
 Goal:
 
-- Rabbits do not see anyone.
-- Students do not see Rabbits.
-- Instructors see Rabbits.
-- Sometimes students may see Rabbits.
+- Beacons do not see anyone.
+- Students do not see Beacons.
+- Instructors see Beacons.
+- Sometimes students may see Beacons.
 
 Create roles:
 
@@ -511,7 +511,7 @@ Student:
   Can see assigned groups: On
   Can send assigned groups: On
 
-Rabbit:
+Beacon:
   Can see everyone: Off
   Can send everyone: Off
   Can see assigned groups: Off
@@ -523,15 +523,15 @@ Create groups:
 ```text
 Alpha
 Bravo
-Rabbit
+Beacon
 ```
 
 Assign users:
 
 ```text
-Rabbit users:
-  Role: Rabbit
-  Groups: Rabbit
+Beacon users:
+  Role: Beacon
+  Groups: Beacon
 
 Students:
   Role: Student
@@ -545,32 +545,32 @@ Instructors:
 Links:
 
 ```text
-Rabbit <-> Alpha: No Link
-Rabbit <-> Bravo: No Link
+Beacon <-> Alpha: No Link
+Beacon <-> Bravo: No Link
 Alpha <-> Bravo: whatever the exercise needs
 ```
 
 Result:
 
-- Rabbits see nobody.
-- Students do not see Rabbits.
-- Instructors see Rabbits because Instructor can see everyone.
+- Beacons see nobody.
+- Students do not see Beacons.
+- Instructors see Beacons because Instructor can see everyone.
 
-To temporarily let Alpha see Rabbits:
-
-```text
-Visibility Links:
-  Alpha -> Rabbit
-```
-
-To let Rabbits see Alpha too:
+To temporarily let Alpha see Beacons:
 
 ```text
 Visibility Links:
-  Alpha <-> Rabbit: Two Way
+  Alpha -> Beacon
 ```
 
-Most of the time, use one-way from students to Rabbit only if the Rabbit should appear on the map but not receive student visibility in return.
+To let Beacons see Alpha too:
+
+```text
+Visibility Links:
+  Alpha <-> Beacon: Two Way
+```
+
+Most of the time, use one-way from students to Beacon only if the Beacon should appear on the map but not receive student visibility in return.
 
 ## Example 5: Staff See Staff, Students Do Not See Staff
 
@@ -658,9 +658,9 @@ If an instructor needs to see everyone, give the instructor role "Can see everyo
 
 `Alpha -> Bravo` is one-way. Use Two Way if both groups should see and send to each other.
 
-### Mistake: Giving Rabbit Users Team Member Permissions
+### Mistake: Giving Beacon Users Team Member Permissions
 
-If Rabbit users have "Can see assigned groups" and share a group with students, they may see students. For isolated behavior, give Rabbit users an isolated role.
+If Beacon users have "Can see assigned groups" and share a group with students, they may see students. For isolated behavior, give Beacon users an isolated role.
 
 ### Mistake: Forgetting Access Enforcement
 
@@ -677,12 +677,12 @@ For a new event:
 1. Create roles:
    - Admin or Instructor
    - Team Member or Student
-   - Isolated or Rabbit if needed
+   - Isolated or Beacon if needed
 2. Create groups:
    - Alpha
    - Bravo
    - Staff if staff should see each other as a group
-   - Rabbit if needed
+   - Beacon if needed
 3. Create or bulk create Connection Users.
 4. Use Bulk Membership to assign roles and groups.
 5. Set Visibility Links.
@@ -732,9 +732,9 @@ Before an event, test one device per policy type.
 | Alpha user previews Bravo user with no link | Not visible |
 | Instructor previews Alpha user | Visible |
 | Alpha user previews Instructor | Not visible unless intentionally configured |
-| Rabbit previews Student | Not visible |
-| Instructor previews Rabbit | Visible |
-| Alpha -> Rabbit link enabled | Alpha sees Rabbit |
+| Beacon previews Student | Not visible |
+| Instructor previews Beacon | Visible |
+| Alpha -> Beacon link enabled | Alpha sees Beacon |
 | Alpha <-> Bravo Two Way enabled | Alpha and Bravo see/send both directions |
 
 ## Recommended Defaults
@@ -747,12 +747,12 @@ Access Enforcement: On
 Roles:
   Instructor: see everyone, send everyone
   Student: see assigned groups, send assigned groups
-  Rabbit: no see/send permissions
+  Beacon: no see/send permissions
 
 Groups:
   Alpha
   Bravo
-  Rabbit if needed
+  Beacon if needed
   Staff only if staff should share a staff group
 
 Links:
