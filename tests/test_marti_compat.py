@@ -110,6 +110,22 @@ class MartiCompatibilityTests(unittest.TestCase):
         self.assertEqual(len(packages), 1)
         self.assertEqual(packages[0]["Name"], "maps.zip")
 
+    def test_upload_rejects_zip_entries_with_unsafe_paths(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("../evil.txt", "nope")
+
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            self.service.validate_datapackage_upload("evil.zip", buffer.getvalue())
+
+    def test_upload_rejects_excessive_zip_compression_ratio(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("large.txt", b"A" * (2 * 1024 * 1024))
+
+        with self.assertRaisesRegex(ValueError, "compression ratio"):
+            self.service.validate_datapackage_upload("compressed.zip", buffer.getvalue())
+
     def test_multipart_upload_accepts_common_file_field_names(self):
         for field_name in ("file", "upload", "content"):
             payload = datapackage_bytes(field_name)
@@ -162,6 +178,17 @@ class MartiCompatibilityTests(unittest.TestCase):
             self.service.tak_marti_content_url("abc123"),
             "https://10.66.66.1:18443/Marti/sync/content?hash=abc123",
         )
+
+    def test_legacy_p12_cert_downloads_are_disabled_by_default(self):
+        cert_dir = pathlib.Path(self.tmpdir.name) / "certs"
+        cert_dir.mkdir(exist_ok=True)
+        (cert_dir / "taklite-truststore.p12").write_bytes(b"truststore")
+        (cert_dir / "10.66.66.1.p12").write_bytes(b"truststore")
+
+        for path in ("/certs/taklite-truststore.p12", "/certs/10.66.66.1.p12"):
+            status, _, body = self.request("GET", path)
+
+            self.assertEqual(status, 403, body.decode("utf-8", "replace"))
 
     def test_groups_all_returns_named_access_groups(self):
         self.service.create_access_group("Alpha", color="#55cc88")

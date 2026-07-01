@@ -386,12 +386,28 @@ EOF
 }
 
 configure_fail2ban() {
-  log "Configuring fail2ban sshd jail"
+  log "Configuring fail2ban sshd and TAKlite auth jails"
+  cat >/etc/fail2ban/filter.d/taklite-auth.conf <<'EOF'
+[Definition]
+failregex = ^.*TAKlite auth failure scope=(?:admin|bootstrap|portal) remote=<HOST>\b.*$
+ignoreregex =
+EOF
+
   cat >/etc/fail2ban/jail.d/taklite-vps.local <<EOF
 [sshd]
 enabled = true
 port = ssh
 maxretry = 4
+findtime = 10m
+bantime = 1h
+
+[taklite-auth]
+enabled = true
+filter = taklite-auth
+backend = polling
+logpath = /var/lib/docker/containers/*/*.log
+port = ${TAKLITE_HTTP_HOST_PORT},${TAKLITE_HTTPS_HOST_PORT}
+maxretry = 8
 findtime = 10m
 bantime = 1h
 EOF
@@ -451,22 +467,25 @@ chmod 600 "\${PROCESSING_FILE}" 2>/dev/null || true
 
 REQUEST_ID="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
 TARGET_TAG="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("target_tag",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+RELEASE_ZIP_URL="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("release_zip_url",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
+EXPECTED_SHA256="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("expected_sha256",""))' "\${PROCESSING_FILE}" 2>/dev/null || true)"
 
 write_status "running" "Updating TAKlite"
 mkdir -p /root/taklite-admin
-if [[ "\${TARGET_TAG}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-  CLONE_ARGS=(--depth 1 --branch "\${TARGET_TAG}" https://github.com/C137LLC/TAKlite.git "\${STAGE_DIR}")
-else
-  CLONE_ARGS=(--depth 1 https://github.com/C137LLC/TAKlite.git "\${STAGE_DIR}")
-fi
+if [[ ! "\${TARGET_TAG}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then write_status "failed" "Invalid target tag"; rm -f "\${PROCESSING_FILE}"; exit 1; fi
+if [[ ! "\${RELEASE_ZIP_URL}" =~ ^https://github\\.com/C137LLC/TAKlite/releases/download/v[0-9]+\\.[0-9]+\\.[0-9]+/[A-Za-z0-9_.-]+\\.zip$ ]]; then write_status "failed" "Invalid verified release zip URL"; rm -f "\${PROCESSING_FILE}"; exit 1; fi
+if [[ ! "\${EXPECTED_SHA256}" =~ ^[a-f0-9]{64}$ ]]; then write_status "failed" "Invalid expected SHA-256"; rm -f "\${PROCESSING_FILE}"; exit 1; fi
 
 set +e
 {
   date -u
   rm -rf "\${STAGE_DIR}"
-  git clone "\${CLONE_ARGS[@]}"
+  mkdir -p "\${STAGE_DIR}"
+  release_zip="\${STAGE_DIR}/TAKlite-\${TARGET_TAG}.zip"
+  curl -fL "\${RELEASE_ZIP_URL}" -o "\${release_zip}"
+  printf '%s  %s\n' "\${EXPECTED_SHA256}" "\${release_zip}" | sha256sum -c -
   cd "\${APP_DIR}"
-  ./update.sh --from-dir "\${STAGE_DIR}" --app-dir "\${APP_DIR}"
+  ./update.sh --release-zip "\${release_zip}" --app-dir "\${APP_DIR}"
 } >"\${LOG_FILE}" 2>&1
 rc=\$?
 set -e
@@ -654,6 +673,7 @@ install_firewall_runner() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+APP_DIR="${BASE_DIR}"
 REQUEST_DIR="${BASE_DIR}/taklite/data/firewall"
 REQUEST_FILE="\${REQUEST_DIR}/request.json"
 PROCESSING_FILE="\${REQUEST_DIR}/processing.json"
@@ -748,10 +768,34 @@ set +e
 {
   date -u
   iptables-save >"/root/taklite-admin/iptables-before-taklite-firewall.rules" || true
-  python3 - "\${PROCESSING_FILE}" <<'PY' >/tmp/taklite-firewall-apply.sh
-import json, shlex, sys
+  apply_script="\$(mktemp /run/taklite-firewall-apply.XXXXXX)"
+  if python3 - "\${PROCESSING_FILE}" "\${APP_DIR}/.env" <<'PY' >"\${apply_script}"
+import json, pathlib, shlex, sys
 request = json.load(open(sys.argv[1], encoding="utf-8"))
-defs = request.get("service_definitions") or {}
+env = {}
+env_path = pathlib.Path(sys.argv[2])
+if env_path.exists():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            env[key] = value.strip().strip('"').strip("'")
+def port(name, default):
+    try:
+        value = int(env.get(name, default))
+    except Exception:
+        raise SystemExit(f"bad firewall port setting: {name}")
+    if not 1 <= value <= 65535:
+        raise SystemExit(f"bad firewall port setting: {name}")
+    return value
+defs = {
+    "ssh": {"protocol": "tcp", "port": 22},
+    "wireguard": {"protocol": "udp", "port": port("TAKLITE_WIREGUARD_PORT", "51820")},
+    "wg_dashboard": {"protocol": "tcp", "port": port("TAKLITE_WGDASHBOARD_PORT", "10086")},
+    "taklite_admin": {"protocol": "tcp", "port": port("TAKLITE_HTTP_HOST_PORT", "8080")},
+    "tak_https": {"protocol": "tcp", "port": port("TAKLITE_HTTPS_HOST_PORT", "8443")},
+    "cot_tcp": {"protocol": "tcp", "port": port("TAKLITE_COT_HOST_PORT", "58087")},
+    "cot_tls": {"protocol": "tcp", "port": port("TAKLITE_COT_TLS_HOST_PORT", "8089")},
+}
 services = request.get("services") or {}
 for key, state in services.items():
     definition = defs.get(key) or {}
@@ -761,9 +805,18 @@ for key, state in services.items():
         raise SystemExit(f"bad firewall service: {key}")
     print("apply_service", shlex.quote(key), shlex.quote(proto), shlex.quote(str(port)), shlex.quote(state))
 PY
-  source /tmp/taklite-firewall-apply.sh
-  rm -f /tmp/taklite-firewall-apply.sh
-  iptables-save >"/root/taklite-admin/iptables-after-taklite-firewall.rules" || true
+  then
+    source "\${apply_script}"
+    apply_rc=\$?
+  else
+    apply_rc=\$?
+  fi
+  rm -f "\${apply_script}"
+  if [[ "\${apply_rc}" -eq 0 ]]; then
+    iptables-save >"/root/taklite-admin/iptables-after-taklite-firewall.rules" || true
+  else
+    false
+  fi
 } >"\${LOG_FILE}" 2>&1
 rc=\$?
 set -e
@@ -926,6 +979,7 @@ TAKLITE_MAX_UPLOAD_BYTES=268435456
 TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT}
 TAKLITE_ALLOW_LEGACY_CLIENT_CERT=${TAKLITE_ALLOW_LEGACY_CLIENT_CERT}
 TAKLITE_ACCESS_CONTROL_ENFORCE=${TAKLITE_ACCESS_CONTROL_ENFORCE}
+TAKLITE_LEGACY_CERT_DOWNLOADS=false
 TAKLITE_SOCKET_SEND_TIMEOUT_SECONDS=2.5
 TAKLITE_GUI_UPDATE_ENABLED=true
 TAKLITE_GUI_UPDATE_COMMAND=
@@ -1010,7 +1064,7 @@ Mission/datapackage HTTPS base:
   https://${TAKLITE_BIND_IP}:${TAKLITE_HTTPS_HOST_PORT}/Marti
 
 ATAK HTTPS truststore:
-  URL from a VPN-connected phone: http://${TAKLITE_BIND_IP}:${TAKLITE_HTTP_HOST_PORT}/certs/taklite-truststore.p12
+  packaged inside each per-user connection .dp.zip
   File on VPS: ${BASE_DIR}/taklite/certs/taklite-truststore.p12
   Password: ${TAKLITE_CERT_PASSWORD}
 

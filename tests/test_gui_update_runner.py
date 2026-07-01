@@ -1,8 +1,10 @@
 import importlib.util
+import json
 import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -64,19 +66,37 @@ class GuiUpdateRunnerTests(unittest.TestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertEqual(marker.read_text().strip(), "updated")
 
-    def test_gui_update_runner_can_queue_host_request_file(self):
+    def test_gui_update_runner_requires_verified_release_zip_for_host_request_file(self):
+        request_dir = self.tmp / "gui-update"
+        request_dir.mkdir()
+        service = load_service(self.tmp, enabled=True, request_dir=request_dir)
+
+        result = service.run_gui_update("RUN_UPDATE", "v0.2.99")
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("verified release zip", result["error"])
+        self.assertFalse((request_dir / "request.json").exists())
+
+    def test_gui_update_runner_can_queue_verified_release_zip_request(self):
         request_dir = self.tmp / "gui-update"
         request_dir.mkdir()
         service = load_service(self.tmp, enabled=True, request_dir=request_dir)
 
         status = service.gui_update_status()
-        result = service.run_gui_update("RUN_UPDATE", "v0.2.99")
+        result = service.run_gui_update(
+            "RUN_UPDATE",
+            "v0.2.99",
+            "https://github.com/C137LLC/TAKlite/releases/download/v0.2.99/TAKlite-v0.2.99.zip",
+            "a" * 64,
+        )
 
         self.assertEqual(status["runner_mode"], "request")
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["queued"])
-        self.assertTrue((request_dir / "request.json").exists())
-        self.assertIn("v0.2.99", (request_dir / "request.json").read_text())
+        request = json.loads((request_dir / "request.json").read_text())
+        self.assertEqual(request["target_tag"], "v0.2.99")
+        self.assertEqual(request["release_zip_url"], "https://github.com/C137LLC/TAKlite/releases/download/v0.2.99/TAKlite-v0.2.99.zip")
+        self.assertEqual(request["expected_sha256"], "a" * 64)
 
     def test_version_helpers_parse_release_tags(self):
         service = load_service(self.tmp)
@@ -91,10 +111,40 @@ class GuiUpdateRunnerTests(unittest.TestCase):
 
         status = service.latest_release_status(refresh=True)
 
-        self.assertEqual(status["current_tag"], "v0.2.16")
+        self.assertEqual(status["current_tag"], "v0.2.17")
         self.assertTrue(status["gui_runner_enabled"])
         self.assertFalse(status["update_available"])
         self.assertTrue(status["check_error"])
+
+    def test_update_status_extracts_verified_release_zip_asset(self):
+        service = load_service(self.tmp, enabled=True, request_dir=self.tmp / "missing")
+        payload = {
+            "tag_name": "v0.2.99",
+            "html_url": "https://github.com/C137LLC/TAKlite/releases/tag/v0.2.99",
+            "assets": [{
+                "name": "TAKlite-v0.2.99.zip",
+                "browser_download_url": "https://github.com/C137LLC/TAKlite/releases/download/v0.2.99/TAKlite-v0.2.99.zip",
+                "digest": f"sha256:{'b' * 64}",
+            }],
+        }
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        with mock.patch.object(service, "urlopen", return_value=FakeResponse()):
+            status = service.latest_release_status(refresh=True)
+
+        self.assertTrue(status["update_available"])
+        self.assertTrue(status["verified_update_available"])
+        self.assertEqual(status["verified_asset"]["sha256"], "b" * 64)
+        self.assertEqual(status["verified_asset"]["url"], "https://github.com/C137LLC/TAKlite/releases/download/v0.2.99/TAKlite-v0.2.99.zip")
 
     def test_admin_password_can_be_changed_with_current_password(self):
         service = load_service(self.tmp)
@@ -115,6 +165,46 @@ class GuiUpdateRunnerTests(unittest.TestCase):
             service.change_admin_password("admin", "wrong-password", "NewPass12345!")
 
         self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "admin")
+
+    def test_admin_totp_can_be_enabled_and_required_for_login(self):
+        service = load_service(self.tmp)
+        service.create_admin("admin", "OriginalPass123!")
+
+        setup = service.create_admin_totp_setup("admin", "OriginalPass123!")
+        code = service.totp_code(setup["secret"], for_time=1_800_000_000)
+        enabled = service.enable_admin_totp("admin", "OriginalPass123!", code, for_time=1_800_000_000)
+
+        self.assertTrue(enabled["totp_enabled"])
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "")
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!", code, for_time=1_800_000_000), "admin")
+
+    def test_admin_totp_rejects_bad_code_and_can_be_disabled(self):
+        service = load_service(self.tmp)
+        service.create_admin("admin", "OriginalPass123!")
+        setup = service.create_admin_totp_setup("admin", "OriginalPass123!")
+
+        with self.assertRaises(PermissionError):
+            service.enable_admin_totp("admin", "OriginalPass123!", "000000", for_time=1_800_000_000)
+
+        code = service.totp_code(setup["secret"], for_time=1_800_000_000)
+        service.enable_admin_totp("admin", "OriginalPass123!", code, for_time=1_800_000_000)
+        disabled = service.disable_admin_totp("admin", "OriginalPass123!", code, for_time=1_800_000_000)
+
+        self.assertFalse(disabled["totp_enabled"])
+        self.assertEqual(service.authenticate_admin("admin", "OriginalPass123!"), "admin")
+
+    def test_admin_totp_changes_preserve_current_session_when_provided(self):
+        service = load_service(self.tmp)
+        service.create_admin("admin", "OriginalPass123!")
+        current_token = service.create_session("admin")
+        other_token = service.create_session("admin")
+        setup = service.create_admin_totp_setup("admin", "OriginalPass123!")
+        code = service.totp_code(setup["secret"], for_time=1_800_000_000)
+
+        service.enable_admin_totp("admin", "OriginalPass123!", code, for_time=1_800_000_000, current_token=current_token)
+
+        self.assertEqual(service.validate_session(current_token), "admin")
+        self.assertEqual(service.validate_session(other_token), "")
 
     def test_settings_runner_validates_and_queues_whitelisted_env(self):
         settings_dir = self.tmp / "settings"
@@ -190,7 +280,36 @@ class GuiUpdateRunnerTests(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         self.assertTrue((firewall_dir / "request.json").exists())
-        self.assertIn('"taklite_admin": "vpn"', (firewall_dir / "request.json").read_text())
+        request = (firewall_dir / "request.json").read_text()
+        self.assertIn('"taklite_admin": "vpn"', request)
+        self.assertNotIn("service_definitions", request)
+
+    def test_cert_profile_revocation_disconnects_active_clients_for_cert_cn(self):
+        service = load_service(self.tmp)
+        with service.db_connect() as conn:
+            conn.execute("""
+                insert into cert_profiles
+                  (name, description, download_token, connect_string, truststore_file, client_cert_file, datapackage_file, created_at, revoked_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, null)
+            """, ("alpha-one", "", "token", "10.66.66.1:8089:ssl", "/certs/server.p12", "/certs/alpha-one.p12", "/certs/alpha-one.dp.zip", service.utc_now()))
+            profile_id = conn.execute("select id from cert_profiles where name = ?", ("alpha-one",)).fetchone()["id"]
+            conn.commit()
+
+        class FakeRelay:
+            def __init__(self):
+                self.disconnected = []
+
+            def disconnect_cert_cn(self, cert_cn):
+                self.disconnected.append(cert_cn)
+                return 2
+
+        fake_relay = FakeRelay()
+        service.RELAY = fake_relay
+
+        result = service.revoke_cert_profile(profile_id)
+
+        self.assertTrue(result["revoked"])
+        self.assertEqual(fake_relay.disconnected, ["alpha-one"])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import hashlib
 import hmac
 import html
@@ -20,7 +21,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from socketserver import ThreadingMixIn, TCPServer, BaseRequestHandler
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
@@ -50,16 +51,20 @@ DB_PATH = Path(os.environ.get("TAKLITE_DB", "/data/taklite.sqlite3"))
 PACKAGE_DIR = Path(os.environ.get("TAKLITE_PACKAGE_DIR", "/packages"))
 STATIC_DIR = Path(os.environ.get("TAKLITE_STATIC_DIR", "/app/static"))
 WG_DASHBOARD_URL = os.environ.get("TAKLITE_WGDASHBOARD_URL", "")
-VERSION = "TAKlite 0.2.16"
+VERSION = "TAKlite 0.2.17"
 STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 PORTAL_SESSION_HOURS = 2
 MAX_UPLOAD_BYTES = int(os.environ.get("TAKLITE_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
+MAX_ZIP_ENTRIES = int(os.environ.get("TAKLITE_MAX_ZIP_ENTRIES", "1000"))
+MAX_ZIP_UNCOMPRESSED_BYTES = int(os.environ.get("TAKLITE_MAX_ZIP_UNCOMPRESSED_BYTES", str(512 * 1024 * 1024)))
+MAX_ZIP_COMPRESSION_RATIO = int(os.environ.get("TAKLITE_MAX_ZIP_COMPRESSION_RATIO", "100"))
 MAX_JSON_BYTES = int(os.environ.get("TAKLITE_MAX_JSON_BYTES", str(256 * 1024)))
 COT_MAX_BUFFER_BYTES = int(os.environ.get("TAKLITE_COT_MAX_BUFFER_BYTES", str(1024 * 1024)))
 EVENT_RETENTION_ROWS = int(os.environ.get("TAKLITE_EVENT_RETENTION_ROWS", "50000"))
 COT_TLS_REQUIRE_CLIENT_CERT = os.environ.get("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "true").lower() in ("1", "true", "yes", "on")
 ALLOW_LEGACY_CLIENT_CERT = os.environ.get("TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "false").lower() in ("1", "true", "yes", "on")
 ACCESS_CONTROL_ENFORCE = os.environ.get("TAKLITE_ACCESS_CONTROL_ENFORCE", "true").lower() in ("1", "true", "yes", "on")
+LEGACY_CERT_DOWNLOADS = os.environ.get("TAKLITE_LEGACY_CERT_DOWNLOADS", "false").lower() in ("1", "true", "yes", "on")
 LOGIN_LIMIT_ATTEMPTS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_ATTEMPTS", "8"))
 LOGIN_LIMIT_WINDOW_SECONDS = int(os.environ.get("TAKLITE_LOGIN_LIMIT_WINDOW_SECONDS", "300"))
 MAX_BULK_USERS = int(os.environ.get("TAKLITE_MAX_BULK_USERS", "100"))
@@ -172,7 +177,9 @@ def init_db():
             create table if not exists admins (
                 username text primary key,
                 password_hash text not null,
-                created_at text not null
+                created_at text not null,
+                totp_secret text,
+                totp_enabled integer not null default 0
             )
         """)
         conn.execute("""
@@ -272,6 +279,11 @@ def init_db():
         portal_columns = {row["name"] for row in conn.execute("pragma table_info(portal_users)").fetchall()}
         if "role_id" not in portal_columns:
             conn.execute("alter table portal_users add column role_id integer")
+        admin_columns = {row["name"] for row in conn.execute("pragma table_info(admins)").fetchall()}
+        if "totp_secret" not in admin_columns:
+            conn.execute("alter table admins add column totp_secret text")
+        if "totp_enabled" not in admin_columns:
+            conn.execute("alter table admins add column totp_enabled integer not null default 0")
         package_columns = {row["name"] for row in conn.execute("pragma table_info(datapackages)").fetchall()}
         if "CreatorUserId" not in package_columns:
             conn.execute("alter table datapackages add column CreatorUserId integer")
@@ -524,6 +536,37 @@ def verify_password(password, stored):
         return False
 
 
+def new_totp_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def decode_totp_secret(secret):
+    normalized = re.sub(r"\s+", "", secret or "").upper()
+    normalized += "=" * ((8 - len(normalized) % 8) % 8)
+    return base64.b32decode(normalized, casefold=True)
+
+
+def totp_code(secret, for_time=None, step=30, digits=6):
+    timestamp = time.time() if for_time is None else float(for_time)
+    counter = int(timestamp // step)
+    digest = hmac.new(decode_totp_secret(secret), counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF
+    return str(value % (10 ** digits)).zfill(digits)
+
+
+def verify_totp_code(secret, code, for_time=None, window=1):
+    candidate = re.sub(r"\s+", "", code or "")
+    if not re.fullmatch(r"\d{6}", candidate):
+        return False
+    timestamp = time.time() if for_time is None else float(for_time)
+    for drift in range(-window, window + 1):
+        expected = totp_code(secret, timestamp + drift * 30)
+        if hmac.compare_digest(expected, candidate):
+            return True
+    return False
+
+
 def rate_limit_key(scope, remote, username):
     return f"{scope}:{remote}:{(username or '').strip().lower()}"
 
@@ -544,6 +587,10 @@ def record_login_failure(scope, remote, username):
         attempts = [seen for seen in LOGIN_FAILURES.get(key, []) if now - seen < LOGIN_LIMIT_WINDOW_SECONDS]
         attempts.append(now)
         LOGIN_FAILURES[key] = attempts
+    safe_scope = re.sub(r"[^A-Za-z0-9_.:-]", "_", scope or "unknown")
+    safe_remote = re.sub(r"[^A-Za-z0-9_.:-]", "_", remote or "unknown")
+    safe_user = re.sub(r"[^A-Za-z0-9_.@-]", "_", username or "unknown")
+    print(f"TAKlite auth failure scope={safe_scope} remote={safe_remote} username={safe_user} attempts={len(attempts)}", flush=True)
 
 
 def clear_login_failures(scope, remote, username):
@@ -570,6 +617,61 @@ def create_admin(username, password):
         )
         conn.commit()
     return username
+
+
+def admin_totp_status(username):
+    with db_connect() as conn:
+        row = conn.execute("select totp_enabled, totp_secret from admins where username = ?", ((username or "").strip(),)).fetchone()
+    if not row:
+        raise ValueError("admin user not found")
+    return {"username": (username or "").strip(), "totp_enabled": bool(row["totp_enabled"]), "totp_configured": bool(row["totp_secret"])}
+
+
+def create_admin_totp_setup(username, current_password):
+    username = (username or "").strip()
+    if authenticate_admin(username, current_password, allow_missing_totp=True) != username:
+        raise PermissionError("current password is incorrect")
+    secret = new_totp_secret()
+    issuer = quote("TAKlite")
+    label = quote(f"TAKlite:{username}")
+    uri = f"otpauth://totp/{label}?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
+    with db_connect() as conn:
+        conn.execute("update admins set totp_secret = ?, totp_enabled = 0 where username = ?", (secret, username))
+        conn.commit()
+    return {"username": username, "secret": secret, "otpauth_uri": uri, "totp_enabled": False}
+
+
+def enable_admin_totp(username, current_password, code, for_time=None, current_token=""):
+    username = (username or "").strip()
+    if authenticate_admin(username, current_password, allow_missing_totp=True) != username:
+        raise PermissionError("current password is incorrect")
+    with db_connect() as conn:
+        row = conn.execute("select totp_secret from admins where username = ?", (username,)).fetchone()
+        if not row or not row["totp_secret"]:
+            raise ValueError("two-factor setup has not been started")
+        if not verify_totp_code(row["totp_secret"], code, for_time=for_time):
+            raise PermissionError("two-factor code is incorrect")
+        conn.execute("update admins set totp_enabled = 1 where username = ?", (username,))
+        if current_token:
+            conn.execute("delete from admin_sessions where username = ? and token != ?", (username, current_token))
+        else:
+            conn.execute("delete from admin_sessions where username = ?", (username,))
+        conn.commit()
+    return admin_totp_status(username)
+
+
+def disable_admin_totp(username, current_password, code, for_time=None, current_token=""):
+    username = (username or "").strip()
+    if authenticate_admin(username, current_password, code, for_time=for_time) != username:
+        raise PermissionError("current password or two-factor code is incorrect")
+    with db_connect() as conn:
+        conn.execute("update admins set totp_secret = null, totp_enabled = 0 where username = ?", (username,))
+        if current_token:
+            conn.execute("delete from admin_sessions where username = ? and token != ?", (username, current_token))
+        else:
+            conn.execute("delete from admin_sessions where username = ?", (username,))
+        conn.commit()
+    return admin_totp_status(username)
 
 
 def create_session(username):
@@ -600,12 +702,21 @@ def validate_session(token):
         return row["username"]
 
 
-def authenticate_admin(username, password):
+def authenticate_admin(username, password, totp_value="", for_time=None, allow_missing_totp=False):
     with db_connect() as conn:
-        row = conn.execute("select password_hash from admins where username = ?", ((username or "").strip(),)).fetchone()
+        row = conn.execute("select password_hash, totp_secret, totp_enabled from admins where username = ?", ((username or "").strip(),)).fetchone()
     if not row or not verify_password(password or "", row["password_hash"]):
         return ""
+    if row["totp_enabled"] and not allow_missing_totp:
+        if not row["totp_secret"] or not verify_totp_code(row["totp_secret"], totp_value, for_time=for_time):
+            return ""
     return (username or "").strip()
+
+
+def admin_requires_totp(username, password):
+    with db_connect() as conn:
+        row = conn.execute("select password_hash, totp_enabled from admins where username = ?", ((username or "").strip(),)).fetchone()
+    return bool(row and row["totp_enabled"] and verify_password(password or "", row["password_hash"]))
 
 
 def change_admin_password(username, current_password, new_password, keep_session_token=""):
@@ -1747,6 +1858,9 @@ def revoke_cert_profile(profile_id):
         conn.execute("update cert_profiles set revoked_at = coalesce(revoked_at, ?) where id = ?", (utc_now(), profile_id))
         conn.commit()
         row = conn.execute("select * from cert_profiles where id = ?", (profile_id,)).fetchone()
+    disconnected = RELAY.disconnect_cert_cn(row["name"]) if row and row["name"] else 0
+    if disconnected:
+        print(f"TAKlite disconnected {disconnected} active client(s) for revoked cert_cn={row['name']}", flush=True)
     return cert_profile_row(row)
 
 
@@ -1821,6 +1935,27 @@ class CotRelay:
     def remove(self, handler):
         with self.lock:
             self.clients.pop(handler, None)
+
+    def disconnect_cert_cn(self, cert_cn):
+        cert_cn = (cert_cn or "").strip()
+        if not cert_cn:
+            return 0
+        with self.lock:
+            handlers = [
+                handler
+                for handler, info in self.clients.items()
+                if (info.get("peer_cert_cn") or "") == cert_cn
+            ]
+        for handler in handlers:
+            try:
+                handler.request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                handler.request.close()
+            except OSError:
+                pass
+        return len(handlers)
 
     def update_client(self, remote, uid, callsign):
         with self.lock:
@@ -2234,7 +2369,6 @@ def queue_firewall_update(payload):
         "id": secrets.token_urlsafe(12),
         "requested_at": utc_now(),
         "services": sanitized,
-        "service_definitions": FIREWALL_SERVICES,
         "interfaces": {"wireguard": WG_INTERFACE, "public": PUBLIC_INTERFACE},
     }
     tmp_file = request_dir / f".request-{request['id']}.tmp"
@@ -2348,6 +2482,8 @@ def latest_release_status(refresh=False):
         "latest_version": "",
         "update_available": False,
         "release_url": RELEASES_URL,
+        "verified_asset": None,
+        "verified_update_available": False,
         "checked_at": utc_now(),
         "check_error": "",
         **gui_update_status(),
@@ -2358,11 +2494,14 @@ def latest_release_status(refresh=False):
             payload = json.loads(resp.read().decode("utf-8"))
         latest_tag = payload.get("tag_name", "")
         latest_parts = version_tuple(latest_tag)
+        verified_asset = verified_release_asset(payload)
         status.update({
             "latest_tag": latest_tag,
             "latest_version": latest_tag.lstrip("v"),
             "release_url": payload.get("html_url") or RELEASES_URL,
             "update_available": bool(latest_parts and current_parts and latest_parts > current_parts),
+            "verified_asset": verified_asset,
+            "verified_update_available": bool(verified_asset and latest_parts and current_parts and latest_parts > current_parts),
         })
     except Exception as exc:
         status["check_error"] = str(exc)
@@ -2371,7 +2510,38 @@ def latest_release_status(refresh=False):
     return status
 
 
-def run_gui_update(confirm, target_tag=""):
+def verified_release_asset(payload):
+    tag = payload.get("tag_name", "")
+    expected_names = {f"TAKlite-{tag}.zip"} if tag else set()
+    if tag.startswith("v"):
+        expected_names.add(f"TAKlite-{tag[1:]}.zip")
+    for asset in payload.get("assets") or []:
+        name = asset.get("name", "")
+        if expected_names and name not in expected_names:
+            continue
+        digest = asset.get("digest", "")
+        match = re.fullmatch(r"sha256:([A-Fa-f0-9]{64})", digest or "")
+        url = asset.get("browser_download_url", "")
+        if match and url.startswith("https://github.com/"):
+            return {"name": name, "url": url, "sha256": match.group(1).lower(), "digest": digest}
+    return None
+
+
+def validate_release_zip_url(url):
+    url = (url or "").strip()
+    if not re.fullmatch(r"https://github\.com/C137LLC/TAKlite/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/[A-Za-z0-9_.-]+\.zip", url):
+        raise ValueError("verified release zip URL is required")
+    return url
+
+
+def validate_sha256(value):
+    value = (value or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("verified release zip SHA-256 is required")
+    return value
+
+
+def run_gui_update(confirm, target_tag="", release_zip_url="", expected_sha256=""):
     if not GUI_UPDATE_ENABLED:
         return {"ok": False, "error": "GUI update runner is disabled"}
     if confirm != "RUN_UPDATE":
@@ -2382,11 +2552,18 @@ def run_gui_update(confirm, target_tag=""):
         processing_file = request_dir / "processing.json"
         if request_file.exists() or processing_file.exists():
             return {"ok": False, "error": "an update is already pending or running"}
+        try:
+            release_zip_url = validate_release_zip_url(release_zip_url)
+            expected_sha256 = validate_sha256(expected_sha256)
+        except ValueError as exc:
+            return {"ok": False, "error": f"{exc}; GUI host updates require a verified release zip"}
         request = {
             "id": secrets.token_urlsafe(12),
             "requested_at": utc_now(),
             "current_version": VERSION,
             "target_tag": target_tag,
+            "release_zip_url": release_zip_url,
+            "expected_sha256": expected_sha256,
         }
         tmp_file = request_dir / f".request-{request['id']}.tmp"
         tmp_file.write_text(json.dumps(request, indent=2))
@@ -2485,6 +2662,25 @@ def validate_datapackage_upload(filename, data):
         raise ValueError("datapackage must be a zip file")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            entries = zf.infolist()
+            if len(entries) > MAX_ZIP_ENTRIES:
+                raise ValueError(f"datapackage zip contains too many entries: {len(entries)}")
+            total_uncompressed = 0
+            total_compressed = 0
+            for entry in entries:
+                entry_path = PurePosixPath(entry.filename.replace("\\", "/"))
+                if entry_path.is_absolute() or ".." in entry_path.parts:
+                    raise ValueError(f"datapackage zip contains unsafe entry path: {entry.filename}")
+                if entry.flag_bits & 0x1:
+                    raise ValueError(f"datapackage zip contains encrypted entry: {entry.filename}")
+                total_uncompressed += entry.file_size
+                total_compressed += entry.compress_size
+            if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
+                raise ValueError(f"datapackage zip uncompressed size exceeds maximum of {MAX_ZIP_UNCOMPRESSED_BYTES} bytes")
+            if total_uncompressed > 0:
+                effective_compressed = max(total_compressed, 1)
+                if total_uncompressed / effective_compressed > MAX_ZIP_COMPRESSION_RATIO:
+                    raise ValueError("datapackage zip compression ratio is too high")
             bad = zf.testzip()
             if bad:
                 raise ValueError(f"datapackage zip contains corrupt entry: {bad}")
@@ -2748,6 +2944,13 @@ class HttpHandler(BaseHTTPRequestHandler):
             username = validate_session(self.headers.get("X-Session-Token", "")) or "bootstrap-token"
             self.send_json({"authenticated": True, "username": username, "bootstrap": username == "bootstrap-token"})
             return
+        if path == "/api/admin/2fa/status":
+            username = validate_session(self.headers.get("X-Session-Token", ""))
+            if not username:
+                self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            self.send_json(admin_totp_status(username))
+            return
         if path == "/api/connect/me":
             user = self.require_portal_auth()
             if not user:
@@ -2832,6 +3035,9 @@ class HttpHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         if path == "/certs/taklite-truststore.p12":
+            if not LEGACY_CERT_DOWNLOADS:
+                self.send_json({"error": "legacy cert downloads are disabled"}, HTTPStatus.FORBIDDEN)
+                return
             truststore = CERT_DIR / "taklite-truststore.p12"
             if not truststore.exists():
                 self.send_json({"error": "truststore not found"}, HTTPStatus.NOT_FOUND)
@@ -2857,6 +3063,9 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_download(client_cert, "taklite-client.p12", "application/x-pkcs12")
             return
         if path == "/certs/10.66.66.1.p12":
+            if not LEGACY_CERT_DOWNLOADS:
+                self.send_json({"error": "legacy cert downloads are disabled"}, HTTPStatus.FORBIDDEN)
+                return
             atak_truststore = CERT_DIR / "10.66.66.1.p12"
             if not atak_truststore.exists():
                 self.send_json({"error": "ATAK truststore not found"}, HTTPStatus.NOT_FOUND)
@@ -2990,10 +3199,13 @@ class HttpHandler(BaseHTTPRequestHandler):
                 if login_limited("admin", remote, login_user):
                     self.send_json({"error": "too many failed attempts; try again later"}, HTTPStatus.TOO_MANY_REQUESTS)
                     return
-                username = authenticate_admin(payload.get("username", ""), payload.get("password", ""))
+                username = authenticate_admin(payload.get("username", ""), payload.get("password", ""), payload.get("totp_code", ""))
                 if not username:
                     record_login_failure("admin", remote, login_user)
-                    self.send_json({"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED)
+                    if admin_requires_totp(payload.get("username", ""), payload.get("password", "")):
+                        self.send_json({"error": "two-factor code required", "totp_required": True}, HTTPStatus.UNAUTHORIZED)
+                    else:
+                        self.send_json({"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED)
                     return
                 clear_login_failures("admin", remote, username)
                 self.send_json({"ok": True, "username": username, "session": create_session(username)})
@@ -3021,6 +3233,33 @@ class HttpHandler(BaseHTTPRequestHandler):
                 change_admin_password(username, current_password, new_password, token)
                 self.send_json({"ok": True, "username": username, "message": "admin password changed"})
                 return
+            if path == "/api/admin/2fa/setup":
+                token = self.headers.get("X-Session-Token", "")
+                username = validate_session(token)
+                if not username:
+                    self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                payload = self.read_json()
+                self.send_json(create_admin_totp_setup(username, payload.get("current_password", "")))
+                return
+            if path == "/api/admin/2fa/enable":
+                token = self.headers.get("X-Session-Token", "")
+                username = validate_session(token)
+                if not username:
+                    self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                payload = self.read_json()
+                self.send_json(enable_admin_totp(username, payload.get("current_password", ""), payload.get("totp_code", ""), current_token=token))
+                return
+            if path == "/api/admin/2fa/disable":
+                token = self.headers.get("X-Session-Token", "")
+                username = validate_session(token)
+                if not username:
+                    self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                payload = self.read_json()
+                self.send_json(disable_admin_totp(username, payload.get("current_password", ""), payload.get("totp_code", ""), current_token=token))
+                return
             if path == "/api/connect/login":
                 payload = self.read_json()
                 remote = self.client_address[0]
@@ -3044,7 +3283,12 @@ class HttpHandler(BaseHTTPRequestHandler):
                 if not self.require_auth():
                     return
                 payload = self.read_json()
-                result = run_gui_update(payload.get("confirm", ""), payload.get("target_tag", ""))
+                result = run_gui_update(
+                    payload.get("confirm", ""),
+                    payload.get("target_tag", ""),
+                    payload.get("release_zip_url", ""),
+                    payload.get("expected_sha256", ""),
+                )
                 self.send_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
             if path == "/api/settings/apply":

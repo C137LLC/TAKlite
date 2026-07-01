@@ -287,7 +287,7 @@ function App() {
 
 function AuthScreen({ bootstrap, setSession, setStatus, status }) {
   const hasAdmin = Boolean(bootstrap?.has_admin);
-  const [form, setForm] = useState({ username: '', password: '', token: '' });
+  const [form, setForm] = useState({ username: '', password: '', token: '', totp_code: '' });
 
   const submit = async (event) => {
     event.preventDefault();
@@ -297,7 +297,7 @@ function AuthScreen({ bootstrap, setSession, setStatus, status }) {
       const response = await fetch(path, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ username: form.username, password: form.password }),
+        body: JSON.stringify({ username: form.username, password: form.password, totp_code: form.totp_code }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || response.statusText);
@@ -336,6 +336,12 @@ function AuthScreen({ bootstrap, setSession, setStatus, status }) {
             Password
             <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete={hasAdmin ? 'current-password' : 'new-password'} />
           </label>
+          {hasAdmin ? (
+            <label>
+              2FA code
+              <input value={form.totp_code} onChange={(e) => setForm({ ...form, totp_code: e.target.value })} autoComplete="one-time-code" inputMode="numeric" placeholder="Optional until enabled" />
+            </label>
+          ) : null}
           <button className="btn primary" type="submit">{hasAdmin ? 'Log In' : 'Create Admin'}</button>
         </form>
         <div className="auth-status">{status}</div>
@@ -435,6 +441,10 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
   const [applying, setApplying] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [changingPassword, setChangingPassword] = useState(false);
+  const [twoFactor, setTwoFactor] = useState(null);
+  const [twoFactorForm, setTwoFactorForm] = useState({ current_password: '', totp_code: '' });
+  const [twoFactorSetup, setTwoFactorSetup] = useState(null);
+  const [savingTwoFactor, setSavingTwoFactor] = useState(false);
   const updates = health?.updates || {};
   const healthVersion = health?.version || '';
   const mergedUpdate = { ...updates, ...(updateStatus || {}) };
@@ -442,6 +452,10 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
     const result = await api('/api/settings', session);
     setSettings(result);
     setSettingsForm(result.values || {});
+  }, [session]);
+  const loadTwoFactor = useCallback(async () => {
+    const result = await api('/api/admin/2fa/status', session);
+    setTwoFactor(result);
   }, [session]);
   const checkUpdate = async (refresh = false) => {
     setCheckingUpdate(true);
@@ -485,6 +499,15 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
     return () => { cancelled = true; };
   }, [health, loadSettings, setStatus]);
 
+  useEffect(() => {
+    if (!health) return undefined;
+    let cancelled = false;
+    loadTwoFactor().catch((error) => {
+      if (!cancelled) setStatus(`2FA status load failed: ${error.message}`);
+    });
+    return () => { cancelled = true; };
+  }, [health, loadTwoFactor, setStatus]);
+
   const runUpdate = async () => {
     const latest = await checkUpdate(true);
     if (!latest.update_available) {
@@ -495,12 +518,22 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
       setStatus('Update available, but the GUI updater is not enabled on this server yet.');
       return;
     }
-    if (!confirm('Run the configured TAKlite update command now? The updater should create a backup and preserve local data.')) return;
+    const asset = latest.verified_asset || {};
+    if (!latest.verified_update_available || !asset.url || !asset.sha256) {
+      setStatus('Update available, but no SHA-256 verified TAKlite release zip was found.');
+      return;
+    }
+    if (!confirm(`Run verified TAKlite update ${latest.latest_tag || ''}? The release zip SHA-256 will be checked before install.`)) return;
     setUpdating(true);
     try {
       const result = await api('/api/admin/update/run', session, {
         method: 'POST',
-        body: JSON.stringify({ confirm: 'RUN_UPDATE', target_tag: latest.latest_tag || '' }),
+        body: JSON.stringify({
+          confirm: 'RUN_UPDATE',
+          target_tag: latest.latest_tag || '',
+          release_zip_url: asset.url,
+          expected_sha256: asset.sha256,
+        }),
       });
       setStatus(result.queued ? 'Update requested. TAKlite will restart when the host runner applies it.' : `Update finished with code ${result.returncode ?? 0}.`);
       await load();
@@ -514,7 +547,9 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
   const updateStatusText = mergedUpdate.check_error
     ? 'Unable to check'
     : mergedUpdate.latest_tag
-      ? mergedUpdate.update_available ? `${mergedUpdate.latest_tag} available` : 'Up to date'
+      ? mergedUpdate.update_available
+        ? `${mergedUpdate.latest_tag} available${mergedUpdate.verified_update_available ? ', verified' : ', not verified'}`
+        : 'Up to date'
       : 'Not checked';
   const setField = (key, value) => setSettingsForm((current) => ({ ...(current || {}), [key]: value }));
   const applySettings = async (event) => {
@@ -541,6 +576,7 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
     }
   };
   const setPasswordField = (key, value) => setPasswordForm((current) => ({ ...current, [key]: value }));
+  const setTwoFactorField = (key, value) => setTwoFactorForm((current) => ({ ...current, [key]: value }));
   const changePassword = async (event) => {
     event.preventDefault();
     if (!passwordForm.current_password || !passwordForm.new_password || !passwordForm.confirm_password) {
@@ -567,6 +603,73 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
       setStatus(`Password change failed: ${error.message}`);
     } finally {
       setChangingPassword(false);
+    }
+  };
+  const startTwoFactorSetup = async () => {
+    if (!twoFactorForm.current_password) {
+      setStatus('Enter your current admin password to start 2FA setup.');
+      return;
+    }
+    setSavingTwoFactor(true);
+    try {
+      const result = await api('/api/admin/2fa/setup', session, {
+        method: 'POST',
+        body: JSON.stringify({ current_password: twoFactorForm.current_password }),
+      });
+      setTwoFactorSetup(result);
+      setStatus('2FA setup started. Add the secret to an authenticator app, then enter the current code to enable.');
+      await loadTwoFactor();
+    } catch (error) {
+      setStatus(`2FA setup failed: ${error.message}`);
+    } finally {
+      setSavingTwoFactor(false);
+    }
+  };
+  const enableTwoFactor = async () => {
+    if (!twoFactorSetup) {
+      setStatus('Start 2FA setup before enabling it.');
+      return;
+    }
+    if (!twoFactorForm.current_password || !twoFactorForm.totp_code) {
+      setStatus('Enter current password and the authenticator code.');
+      return;
+    }
+    setSavingTwoFactor(true);
+    try {
+      const result = await api('/api/admin/2fa/enable', session, {
+        method: 'POST',
+        body: JSON.stringify(twoFactorForm),
+      });
+      setTwoFactor(result);
+      setTwoFactorSetup(null);
+      setTwoFactorForm({ current_password: '', totp_code: '' });
+      setStatus('Admin 2FA enabled.');
+    } catch (error) {
+      setStatus(`2FA enable failed: ${error.message}`);
+    } finally {
+      setSavingTwoFactor(false);
+    }
+  };
+  const disableTwoFactor = async () => {
+    if (!twoFactorForm.current_password || !twoFactorForm.totp_code) {
+      setStatus('Enter current password and the current 2FA code to disable 2FA.');
+      return;
+    }
+    if (!confirm('Disable 2FA for this TAKlite admin account?')) return;
+    setSavingTwoFactor(true);
+    try {
+      const result = await api('/api/admin/2fa/disable', session, {
+        method: 'POST',
+        body: JSON.stringify(twoFactorForm),
+      });
+      setTwoFactor(result);
+      setTwoFactorSetup(null);
+      setTwoFactorForm({ current_password: '', totp_code: '' });
+      setStatus('Admin 2FA disabled.');
+    } catch (error) {
+      setStatus(`2FA disable failed: ${error.message}`);
+    } finally {
+      setSavingTwoFactor(false);
     }
   };
 
@@ -631,15 +734,58 @@ function SettingsPanel({ health, wgUrl, session, load, setStatus }) {
         </form>
       </Panel>
 
+      <Panel title="Admin 2FA" icon={ShieldCheck}>
+        <div className="settings-stack">
+          <div className="settings-note">Optional authenticator-app protection for the TAKlite admin login. Keep the recovery path to the VPS shell documented before enabling.</div>
+          <div className="settings-list compact">
+            <SettingsItem label="Two-Factor" value={twoFactor?.totp_enabled ? 'Enabled' : 'Disabled'} tone={twoFactor?.totp_enabled ? 'good' : 'warn'} detail={twoFactor?.totp_configured && !twoFactor?.totp_enabled ? 'Setup started but not enabled' : ''} />
+          </div>
+          <SettingsInput label="Current Password" type="password" value={twoFactorForm.current_password} onChange={(value) => setTwoFactorField('current_password', value)} detail="Required to start, enable, or disable 2FA." />
+          <SettingsInput label="Authenticator Code" value={twoFactorForm.totp_code} onChange={(value) => setTwoFactorField('totp_code', value.replace(/\D/g, '').slice(0, 6))} detail="Six-digit code from the authenticator app." />
+          {twoFactorSetup ? (
+            <div className="settings-code-block">
+              <div>
+                <span>Secret</span>
+                <code>{twoFactorSetup.secret}</code>
+              </div>
+              <div>
+                <span>Authenticator URI</span>
+                <code>{twoFactorSetup.otpauth_uri}</code>
+              </div>
+            </div>
+          ) : null}
+          <div className="settings-actions">
+            {twoFactor?.totp_enabled ? (
+              <button className="btn danger-soft" disabled={savingTwoFactor} onClick={disableTwoFactor}>
+                <ShieldCheck size={16} />
+                Disable 2FA
+              </button>
+            ) : (
+              <>
+                <button className="btn ghost" disabled={savingTwoFactor} onClick={startTwoFactorSetup}>
+                  <KeyRound size={16} />
+                  Start Setup
+                </button>
+                <button className="btn primary" disabled={savingTwoFactor || !twoFactorSetup} onClick={enableTwoFactor}>
+                  <ShieldCheck size={16} />
+                  Enable 2FA
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </Panel>
+
       <Panel title="Updates" icon={RotateCw}>
         <div className="settings-stack">
           <div className="settings-note">
-            Updates preserve <code>.env</code>, TAKlite data, certificates, packages, WireGuard, the admin peer, and WGDashboard config.
+            GUI updates require a GitHub release zip with a published SHA-256 digest. Updates preserve <code>.env</code>, TAKlite data, certificates, packages, WireGuard, the admin peer, and WGDashboard config.
           </div>
           <div className="settings-list compact">
             <SettingsItem label="Current Version" value={health.version || '-'} />
             <SettingsItem label="Latest Release" value={mergedUpdate.latest_tag || '-'} />
             <SettingsItem label="Update Status" value={updateStatusText} tone={mergedUpdate.update_available ? 'warn' : mergedUpdate.check_error ? 'bad' : 'good'} detail={mergedUpdate.check_error || ''} />
+            <SettingsItem label="Release ZIP Verification" value={mergedUpdate.verified_asset?.sha256 ? 'SHA-256 available' : 'Missing'} tone={mergedUpdate.verified_asset?.sha256 ? 'good' : 'warn'} detail={mergedUpdate.verified_asset?.sha256 || 'GUI update will not run without a verified release zip.'} />
             <SettingsItem label="GUI Update Runner" value={mergedUpdate.gui_runner_enabled ? 'Enabled' : 'Not Enabled'} tone={mergedUpdate.gui_runner_enabled ? 'good' : 'neutral'} />
           </div>
           <div className="settings-actions">

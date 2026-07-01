@@ -19,6 +19,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT: \"${TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT:-true}\"", compose)
         self.assertIn("TAKLITE_ALLOW_LEGACY_CLIENT_CERT: \"${TAKLITE_ALLOW_LEGACY_CLIENT_CERT:-false}\"", compose)
         self.assertIn("TAKLITE_ACCESS_CONTROL_ENFORCE: \"${TAKLITE_ACCESS_CONTROL_ENFORCE:-true}\"", compose)
+        self.assertIn("TAKLITE_LEGACY_CERT_DOWNLOADS: \"${TAKLITE_LEGACY_CERT_DOWNLOADS:-false}\"", compose)
         self.assertIn("TAKLITE_GUI_UPDATE_ENABLED: \"${TAKLITE_GUI_UPDATE_ENABLED:-false}\"", compose)
         self.assertIn("TAKLITE_GUI_UPDATE_REQUEST_DIR: \"${TAKLITE_GUI_UPDATE_REQUEST_DIR:-}\"", compose)
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR: \"${TAKLITE_SETTINGS_REQUEST_DIR:-}\"", compose)
@@ -32,6 +33,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT=true", env_example)
         self.assertIn("TAKLITE_ALLOW_LEGACY_CLIENT_CERT=false", env_example)
         self.assertIn("TAKLITE_ACCESS_CONTROL_ENFORCE=true", env_example)
+        self.assertIn("TAKLITE_LEGACY_CERT_DOWNLOADS=false", env_example)
         self.assertIn("TAKLITE_GUI_UPDATE_ENABLED=false", env_example)
         self.assertIn("TAKLITE_GUI_UPDATE_REQUEST_DIR=", env_example)
         self.assertIn("TAKLITE_SETTINGS_REQUEST_DIR=", env_example)
@@ -59,6 +61,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn('append_env_default "${env_file}" "TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT" "true"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_ALLOW_LEGACY_CLIENT_CERT" "false"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_ACCESS_CONTROL_ENFORCE" "true"', updater)
+        self.assertIn('append_env_default "${env_file}" "TAKLITE_LEGACY_CERT_DOWNLOADS" "false"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_SERVER_HOST" "10.66.66.1"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_CONTAINER_USER" "10001:10001"', updater)
         self.assertIn('append_env_default "${env_file}" "TAKLITE_AUTO_INIT_CERTS" "false"', updater)
@@ -68,12 +71,36 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("taklite-gui-update.path", updater)
         self.assertIn("taklite-settings.path", updater)
         self.assertIn("taklite-firewall.path", updater)
+        self.assertIn("EXPECTED_SHA256", updater)
+        self.assertIn("sha256sum -c -", updater)
+        self.assertIn("--release-zip", updater)
 
         service = (ROOT / "docker" / "taklite" / "taklite_service.py").read_text()
         self.assertIn('TAKLITE_COT_TLS_REQUIRE_CLIENT_CERT", "true"', service)
         self.assertIn('TAKLITE_ALLOW_LEGACY_CLIENT_CERT", "false"', service)
         self.assertIn('TAKLITE_ACCESS_CONTROL_ENFORCE", "true"', service)
+        self.assertIn('TAKLITE_LEGACY_CERT_DOWNLOADS", "false"', service)
         self.assertIn('TAKLITE_AUTO_INIT_CERTS", "false"', service)
+        self.assertIn("verified_release_asset", service)
+        self.assertIn("validate_sha256", service)
+
+    def test_gui_update_runner_requires_hash_verified_release_zip(self):
+        installer = (ROOT / "install.sh").read_text()
+        updater = (ROOT / "update.sh").read_text()
+
+        for script in (installer, updater):
+            self.assertIn("RELEASE_ZIP_URL", script)
+            self.assertIn("EXPECTED_SHA256", script)
+            self.assertIn("sha256sum -c -", script)
+            self.assertIn("--release-zip", script)
+
+    def test_installer_configures_taklite_auth_fail2ban_filter(self):
+        installer = (ROOT / "install.sh").read_text()
+
+        self.assertIn("/etc/fail2ban/filter.d/taklite-auth.conf", installer)
+        self.assertIn("[taklite-auth]", installer)
+        self.assertIn("TAKlite auth failure scope=", installer)
+        self.assertIn("/var/lib/docker/containers/*/*.log", installer)
 
     def test_portable_desktop_assets_are_packaged(self):
         env_desktop = (ROOT / ".env.desktop.example").read_text()

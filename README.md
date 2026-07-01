@@ -21,6 +21,7 @@ It can run in two modes:
 - Supports bulk Connection User creation for faster onboarding
 - Relays PLI, chat, markers, drawings, polygons, and CoT traffic
 - Supports datapackage upload, search, download, receive, and delete
+- Supports optional authenticator-app 2FA for TAKlite admin login
 - Generates fresh keys, tokens, passwords, CA, and certs on every install
 
 ## Dashboard Preview
@@ -140,6 +141,8 @@ Do not rerun `install.sh` for normal updates. Use one of the two workflows below
 
 Updates preserve custom network settings and ports, including changed TAKlite HTTP/HTTPS/CoT ports, WireGuard bind IP, and WGDashboard URL.
 
+The Settings page also includes a GUI update button. GUI updates only run when the GitHub release exposes a TAKlite release zip with a SHA-256 digest, then the host runner checks that hash before applying the update.
+
 ### Option 1: Update From GitHub
 
 Run this on the VPS:
@@ -239,12 +242,16 @@ The TAKlite certificate password defaults to `atakatak` for easier ATAK/WinTAK i
 
 Do not reuse `/root/taklite-admin`, `/etc/wireguard`, `.env`, `taklite/certs`, or `taklite/data` between VPS deployments.
 
+Optional admin 2FA can be enabled from Settings after the first admin account is created. The installer also configures fail2ban for SSH and TAKlite admin, portal, and bootstrap authentication failures.
+
 ## Documentation
 
 - [User Guide](docs/user-guide.md)
 - [User Guide PDF](docs/TAKlite-User-Guide.pdf)
 - [Admin Install Guide](docs/admin-install-guide.md)
 - [Deployment And Update Lifecycle](docs/deployment-lifecycle.md)
+- [Backup And Restore](docs/backup-restore.md)
+- [Dependency Update Checklist](docs/dependency-update-checklist.md)
 - [Platform Support](docs/platform-support.md)
 - [Upgrade Guide](docs/upgrade-guide.md)
 - [Test Checklist](docs/test-checklist.md)
